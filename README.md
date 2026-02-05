@@ -1,73 +1,21 @@
-# GramSathi AI – Technical Design
+# GramSathi AI
 
-## 1. System Overview
+Voice-first AI assistant for rural healthcare guidance and local commerce.
 
-GramSathi AI is a voice-first AI assistant for rural India that integrates healthcare guidance and local commerce using AWS serverless services and large language models.
+## Vision
 
----
+Empower Bharat’s rural population with accessible healthcare information and local shopping using AI and voice technology.
 
-## 2. High-Level Architecture
+## Domains
 
-User (WhatsApp / Mobile App)
-→ API Gateway
-→ AWS Lambda
-→ Amazon Transcribe (Speech to Text)
-→ Amazon Bedrock (LLM Reasoning)
-→ Business Logic Layer
-→ DynamoDB
-→ Response Generator
-→ Amazon Polly (Text to Speech)
-→ User
+- Healthcare
+- Retail
+- Rural Innovation
 
----
+## Tech Stack
 
-## 3. AWS Components
+AWS Serverless, Amazon Bedrock, Lambda, DynamoDB, S3, WhatsApp API.
 
-- API Gateway: Entry point for clients
-- AWS Lambda: Core orchestration logic
-- Amazon Transcribe: Speech recognition
-- Amazon Bedrock: AI reasoning
-- DynamoDB: User, conversation, shop data
-- S3: Audio storage and logs
-- SNS / SES: Notifications
-- Amazon Polly: Voice responses
+## Status
 
----
-
-## 4. AI Workflow
-
-1. User submits voice/text
-2. Transcribe converts speech to text
-3. Bedrock interprets intent (health / retail / info)
-4. Lambda executes business logic
-5. DynamoDB fetches relevant data
-6. Response generated
-7. Polly converts response to audio
-8. Result sent back to user
-
----
-
-## 5. Security
-
-- IAM-based access control
-- Encrypted storage
-- API authentication
-- PII minimization
-
----
-
-## 6. Scalability
-
-- Fully serverless
-- Auto-scaling Lambda
-- Stateless processing
-- Regional expansion supported
-
----
-
-## 7. Future Enhancements
-
-- Farmer advisory
-- Government scheme discovery
-- Offline support
-- ASHA worker dashboard
+Conceptual Architecture (Hackathon Submission)
