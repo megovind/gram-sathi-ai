@@ -1,0 +1,4 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "_comment": "Not used — backend is Python. Present to satisfy tooling references."
+}

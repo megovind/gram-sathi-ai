@@ -1,0 +1,29 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Flutter
+ui/app/.dart_tool/
+ui/app/build/
+ui/app/.packages
+ui/app/.pub-cache/
+ui/app/.flutter-plugins
+ui/app/.flutter-plugins-dependencies
+
+# Serverless
+backend/.serverless/
+backend/node_modules/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

@@ -1,0 +1,36 @@
+# Secrets — NEVER commit these
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Serverless
+.serverless/
+.webpack/
+
+# Node (Serverless Framework tooling)
+node_modules/
+
+# Test artefacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# IDE
+.DS_Store
+.idea/
+.vscode/
