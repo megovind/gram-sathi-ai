@@ -1,3 +1,5 @@
+import '../../core/constants/app_constants.dart';
+
 class InventoryItemModel {
   final String itemId;
   final String name;
@@ -20,7 +22,7 @@ class InventoryItemModel {
         name: json['name'] as String,
         nameHindi: json['nameHindi'] as String?,
         price: (json['price'] as num).toDouble(),
-        unit: json['unit'] as String? ?? 'piece',
+        unit: json['unit'] as String? ?? AppConstants.defaultInventoryUnit,
         stockQty: json['stockQty'] as int? ?? 0,
       );
 
@@ -31,7 +33,8 @@ class ShopModel {
   final String shopId;
   final String name;
   final String ownerName;
-  final String phone;
+  // phone is stripped by the public /shop/{id} endpoint — always treat as optional
+  final String? phone;
   final String pincode;
   final String? address;
   final String status;
@@ -41,7 +44,7 @@ class ShopModel {
     required this.shopId,
     required this.name,
     required this.ownerName,
-    required this.phone,
+    this.phone,
     required this.pincode,
     this.address,
     required this.status,
@@ -51,11 +54,11 @@ class ShopModel {
   factory ShopModel.fromJson(Map<String, dynamic> json) => ShopModel(
         shopId: json['shopId'] as String,
         name: json['name'] as String,
-        ownerName: json['ownerName'] as String,
-        phone: json['phone'] as String,
-        pincode: json['pincode'] as String,
+        ownerName: json['ownerName'] as String? ?? '',
+        phone: json['phone'] as String?,
+        pincode: json['pincode'] as String? ?? '',
         address: json['address'] as String?,
-        status: json['status'] as String? ?? 'pending',
+        status: json['status'] as String? ?? AppConstants.shopStatusPending,
         inventory: (json['inventory'] as List<dynamic>? ?? [])
             .map((e) => InventoryItemModel.fromJson(e as Map<String, dynamic>))
             .toList(),

@@ -4,6 +4,8 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
+import '../../../core/constants/app_strings.dart';
 import '../../../core/router/app_router.dart';
 import '../../../data/services/api_service.dart';
 import '../../../data/services/storage_service.dart';
@@ -30,6 +32,8 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
@@ -62,13 +66,13 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
                 const SizedBox(height: 20),
 
                 Text(
-                  'अपना नंबर डालें',
+                  strings.enterPhoneTitle,
                   style: Theme.of(context).textTheme.headlineMedium,
                 ),
                 const SizedBox(height: 6),
-                const Text(
-                  'Enter your mobile number to get started',
-                  style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
+                Text(
+                  strings.enterPhoneSubtitle,
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 14),
                 ),
                 const SizedBox(height: 32),
 
@@ -78,14 +82,14 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
                   keyboardType: TextInputType.phone,
                   inputFormatters: [
                     FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10),
+                    LengthLimitingTextInputFormatter(AppConstants.phoneNumberLength),
                   ],
                   decoration: InputDecoration(
-                    labelText: 'मोबाइल नंबर',
-                    hintText: '9876543210',
+                    labelText: strings.mobileNumberLabel,
+                    hintText: strings.phoneHint,
                     prefixIcon: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                      child: const Text('+91  ',
+                      child: const Text(AppConstants.phoneCountryPrefix,
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
@@ -94,8 +98,8 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
                     ),
                   ),
                   validator: (val) {
-                    if (val == null || val.length != 10) {
-                      return '10 अंकों का नंबर डालें';
+                    if (val == null || val.length != AppConstants.phoneNumberLength) {
+                      return strings.phone10DigitsError;
                     }
                     return null;
                   },
@@ -106,9 +110,9 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
                 TextFormField(
                   controller: _nameController,
                   textCapitalization: TextCapitalization.words,
-                  decoration: const InputDecoration(
-                    labelText: 'आपका नाम (वैकल्पिक)',
-                    hintText: 'जैसे: Ramesh Kumar',
+                  decoration: InputDecoration(
+                    labelText: strings.nameOptionalLabel,
+                    hintText: strings.nameHint,
                     prefixIcon: Icon(Icons.person_outline),
                   ),
                 ),
@@ -122,14 +126,14 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
                           height: 22,
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                         )
-                      : const Text('आगे बढ़ें / Continue'),
+                      : Text(strings.continueText),
                 ),
                 const SizedBox(height: 16),
 
                 // Privacy note
-                const Center(
+                Center(
                   child: Text(
-                    'आपका नंबर सुरक्षित है। कभी शेयर नहीं किया जाएगा।\nYour number is private and secure.',
+                    strings.privacyNotice,
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: AppColors.textHint,
@@ -173,11 +177,12 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
       if (mounted) context.go(AppRoutes.welcome);
     } catch (e) {
       if (mounted) {
+        final strings = AppStrings.forLanguage(context.read<StorageService>().language);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Text('नेटवर्क की समस्या है। बाद में कोशिश करें।'),
+            content: Text(strings.networkErrorRetry),
             action: SnackBarAction(
-              label: 'Skip',
+              label: strings.skipButton,
               onPressed: () => context.go(AppRoutes.welcome),
             ),
           ),

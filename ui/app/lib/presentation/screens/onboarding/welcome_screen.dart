@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/router/app_router.dart';
+import '../../widgets/app_icon_widget.dart';
 import '../../../data/services/storage_service.dart';
 
 class WelcomeScreen extends StatelessWidget {
@@ -12,76 +13,95 @@ class WelcomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
-          child: Column(
-            children: [
-              const Spacer(),
-              Container(
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    colors: [AppColors.primary, AppColors.primaryLight],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(36),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primary.withOpacity(0.3),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
+      body: Stack(
+        children: [
+          // Gradient header background
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: MediaQuery.of(context).size.height * 0.42,
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [AppColors.primaryDark, AppColors.primary, AppColors.primaryLight],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                child: const Icon(Icons.record_voice_over, color: Colors.white, size: 60),
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(36),
+                  bottomRight: Radius.circular(36),
+                ),
               ),
-              const SizedBox(height: 36),
-              Text(
-                AppStrings.welcomeTitle,
-                style: Theme.of(context).textTheme.headlineLarge?.copyWith(fontSize: 36),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                AppStrings.welcomeSubtitle,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: AppColors.textSecondary,
-                      height: 1.6,
-                    ),
-              ),
-              const SizedBox(height: 48),
-              _FeatureTile(
-                icon: Icons.health_and_safety_outlined,
-                color: AppColors.secondary,
-                title: 'स्वास्थ्य सलाह',
-                subtitle: 'लक्षण बताएँ, घरेलू उपाय पाएँ',
-              ),
-              const SizedBox(height: 16),
-              _FeatureTile(
-                icon: Icons.store_outlined,
-                color: AppColors.accent,
-                title: 'दुकान से मँगाएँ',
-                subtitle: 'नजदीकी दुकान से सामान ऑर्डर करें',
-              ),
-              const SizedBox(height: 16),
-              _FeatureTile(
-                icon: Icons.mic_outlined,
-                color: AppColors.primary,
-                title: 'आवाज़ से बात करें',
-                subtitle: 'हिंदी में बोलें, तुरंत जवाब पाएँ',
-              ),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: () => _onGetStarted(context),
-                child: const Text(AppStrings.getStarted),
-              ),
-            ],
+            ),
           ),
-        ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              child: Column(
+                children: [
+                  const SizedBox(height: 24),
+                  // App icon on gradient
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(28),
+                    child: const AppIconWidget(size: 110, fit: BoxFit.fill),
+                  ),
+                  const SizedBox(height: 20),
+                  // Title on gradient
+                  Text(
+                    strings.welcomeTitle,
+                    style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                          fontSize: 36,
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    strings.welcomeSubtitle,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 15,
+                      height: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+                  // Feature tiles on white
+                  _FeatureTile(
+                    icon: Icons.health_and_safety_outlined,
+                    color: AppColors.secondary,
+                    title: strings.featureHealthTitle,
+                    subtitle: strings.featureHealthSubtitle,
+                  ),
+                  const SizedBox(height: 12),
+                  _FeatureTile(
+                    icon: Icons.store_outlined,
+                    color: AppColors.accent,
+                    title: strings.featureOrderTitle,
+                    subtitle: strings.featureOrderSubtitle,
+                  ),
+                  const SizedBox(height: 12),
+                  _FeatureTile(
+                    icon: Icons.mic_outlined,
+                    color: AppColors.primary,
+                    title: strings.featureVoiceTitle,
+                    subtitle: strings.featureVoiceSubtitle,
+                  ),
+                  const Spacer(),
+                  ElevatedButton(
+                    onPressed: () => _onGetStarted(context),
+                    child: Text(strings.getStarted),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -108,20 +128,27 @@ class _FeatureTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: color.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(10),
+                color: color.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(12),
               ),
-              child: Icon(icon, color: color, size: 26),
+              child: Icon(icon, color: color, size: 24),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -129,13 +156,14 @@ class _FeatureTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(title,
-                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
+                      style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
                   const SizedBox(height: 2),
                   Text(subtitle,
                       style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
                 ],
               ),
             ),
+            Icon(Icons.arrow_forward_ios, size: 14, color: color.withOpacity(0.5)),
           ],
         ),
       );

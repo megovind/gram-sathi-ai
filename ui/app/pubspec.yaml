@@ -20,7 +20,7 @@ dependencies:
   dio: ^5.7.0
 
   # Audio recording
-  record: ^5.1.2
+  record: ^6.0.0
 
   # Audio playback
   just_audio: ^0.9.42
@@ -37,6 +37,9 @@ dependencies:
   # Permissions
   permission_handler: ^11.3.1
 
+  # GPS location (for nearby clinics/pharmacies — US-L1)
+  geolocator: ^13.0.1
+
   # File handling
   path_provider: ^2.1.4
   path: ^1.9.0
@@ -49,20 +52,31 @@ dependencies:
 
   cupertino_icons: ^1.0.8
 
+  # Fonts (NotoSansDevanagari for Hindi) — loaded at runtime, no local assets
+  google_fonts: ^6.2.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
   build_runner: ^2.4.13
+  flutter_native_splash: ^2.4.7
+
+flutter_native_splash:
+  color: "#0C0B0B"
+  color_dark: "#0C0B0B"
+  image: assets/images/app_icon.png
+  android_12:
+    color: "#0C0B0B"
+    color_dark: "#0C0B0B"
+    image: assets/images/app_icon.png
+    icon_background_color: "#0C0B0B"
+    icon_background_color_dark: "#0C0B0B"
+  fullscreen: false
+  web: false
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/
     - assets/animations/
-  fonts:
-    - family: NotoSansDevanagari
-      fonts:
-        - asset: assets/fonts/NotoSansDevanagari-Regular.ttf
-        - asset: assets/fonts/NotoSansDevanagari-Bold.ttf
-          weight: 700

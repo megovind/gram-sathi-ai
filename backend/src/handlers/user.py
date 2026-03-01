@@ -8,8 +8,15 @@ import uuid
 from datetime import datetime, timezone
 
 from src.models.user import Language, User, UserRole
-from src.services.dynamodb_service import dynamo
+from src.services.database import db
 from src.utils.auth import create_token
+from src.utils.constants import (
+    DEFAULT_LANGUAGE,
+    ERR_ROUTE_NOT_FOUND,
+    ERR_UNSUPPORTED_LANGUAGE,
+    ERR_USER_NOT_FOUND,
+    USER_ID_PHONE_PREFIX,
+)
 from src.utils.response import error, ok, parse_body
 
 
@@ -23,7 +30,7 @@ def handler(event: dict, context) -> dict:
     if method == "GET" and user_id:
         return _get_user(user_id)
 
-    return error("Route not found", 404)
+    return error(ERR_ROUTE_NOT_FOUND, 404)
 
 
 def _create_or_update(event: dict) -> dict:
@@ -33,20 +40,20 @@ def _create_or_update(event: dict) -> dict:
     """
     body = parse_body(event)
     phone: str = body.get("phone", "")
-    language: str = body.get("language", "hi")
+    language: str = body.get("language", DEFAULT_LANGUAGE)
     name: str = body.get("name", "")
     role: str = body.get("role", UserRole.CITIZEN.value)
 
     if language not in Language._value2member_map_:
-        return error(f"Unsupported language: {language}", 400)
+        return error(ERR_UNSUPPORTED_LANGUAGE.format(language), 400)
 
     # Check if user with this phone already exists
     existing = None
     if phone:
         # Scan by phone is expensive — in production add a GSI on phone
         # For now create deterministic userId from phone
-        user_id = f"ph-{phone}"
-        existing = dynamo.get_user(user_id)
+        user_id = f"{USER_ID_PHONE_PREFIX}{phone}"
+        existing = db.get_user(user_id)
 
     if existing:
         # Update language/name preference
@@ -54,10 +61,10 @@ def _create_or_update(event: dict) -> dict:
         if name:
             existing["name"] = name
         existing["updatedAt"] = datetime.now(timezone.utc).isoformat()
-        dynamo.save_user(existing)
+        db.save_user(existing)
         user = User.from_dynamo(existing)
     else:
-        user_id = f"ph-{phone}" if phone else str(uuid.uuid4())
+        user_id = f"{USER_ID_PHONE_PREFIX}{phone}" if phone else str(uuid.uuid4())
         user = User(
             userId=user_id,
             phone=phone or None,
@@ -65,7 +72,7 @@ def _create_or_update(event: dict) -> dict:
             preferredLanguage=Language(language),
             role=UserRole(role),
         )
-        dynamo.save_user(user.to_dynamo())
+        db.save_user(user.to_dynamo())
 
     token = create_token(user.userId)
 
@@ -81,7 +88,7 @@ def _create_or_update(event: dict) -> dict:
 
 
 def _get_user(user_id: str) -> dict:
-    user_data = dynamo.get_user(user_id)
+    user_data = db.get_user(user_id)
     if not user_data:
-        return error("User not found", 404)
+        return error(ERR_USER_NOT_FOUND, 404)
     return ok(user_data)

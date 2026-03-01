@@ -151,9 +151,9 @@ def test_nearby_missing_pincode(dynamo_tables):
 @mock_aws
 def test_nearby_returns_facilities(dynamo_tables):
     from src.handlers.health import handler
-    from src.services.dynamodb_service import dynamo
+    from src.services.database import db
 
-    dynamo.save_shop({
+    db.save_shop({
         "shopId": "clinic-001",
         "ownerId": "o1",
         "name": "Sharma Clinic",

@@ -11,6 +11,7 @@ class Config:
     SHOPS_TABLE: str = f"{TABLE_PREFIX}-shops"
     ORDERS_TABLE: str = f"{TABLE_PREFIX}-orders"
     RESPONSE_CACHE_TABLE: str = f"{TABLE_PREFIX}-response-cache"
+    GEO_CACHE_TABLE: str = os.environ.get("GEO_CACHE_TABLE", f"{TABLE_PREFIX}-geo-cache")
 
     S3_AUDIO_BUCKET: str = os.environ.get("S3_AUDIO_BUCKET", f"gramsathi-audio-{STAGE}")
     AUDIO_EXPIRY_SECONDS: int = 3600
@@ -28,6 +29,7 @@ class Config:
     BEDROCK_MAX_TOKENS: int = int(os.environ.get("BEDROCK_MAX_TOKENS", "512"))
     BEDROCK_HISTORY_TURNS: int = 4
     RESPONSE_CACHE_TTL_SECONDS: int = 86400
+    OVERPASS_RADIUS_METERS: int = int(os.environ.get("OVERPASS_RADIUS_METERS", "5000"))
 
     # Input validation limits — prevents token abuse and DynamoDB oversized items
     MAX_TEXT_LENGTH: int = 1000       # characters per user message
@@ -45,6 +47,9 @@ class Config:
 
     SUPPORTED_LANGUAGES: list = ["hi", "en", "mr", "ta", "te", "kn", "bn", "gu"]
     DEFAULT_LANGUAGE: str = "hi"
+
+    # MongoDB for local dev (when IS_OFFLINE) — no AWS DynamoDB needed
+    MONGODB_URI: str = os.environ.get("MONGODB_URI", "mongodb://localhost:27017")
 
 
 config = Config()

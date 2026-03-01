@@ -5,16 +5,37 @@ POST /commerce/shops        – discover nearby local shops (public)
 POST /commerce/order        – place an order (auth required)
 GET  /commerce/order/{id}   – get order status (auth required)
 """
+import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from src.models.order import Order, OrderItem, OrderStatus
-from src.services.dynamodb_service import dynamo
+from src.services.database import db
 from src.services.sns_service import sns
 from src.utils.auth import require_auth
 from src.utils.config import config
+from src.utils.constants import (
+    ERR_FORBIDDEN,
+    ERR_INVALID_ITEM_DATA,
+    ERR_ITEM_PRICE_NEGATIVE,
+    ERR_ITEM_QTY_POSITIVE,
+    ERR_ORDER_ID_REQUIRED,
+    ERR_ORDER_NOT_FOUND,
+    ERR_PINCODE_FORMAT,
+    ERR_PINCODE_REQUIRED,
+    ERR_ROUTE_NOT_FOUND,
+    ERR_SHOP_ID_AND_ITEMS_REQUIRED,
+    ERR_SHOP_NOT_FOUND,
+    ERR_TOO_MANY_ITEMS,
+    MSG_ORDER_CONFIRMED,
+    ORDER_ID_DISPLAY_LEN,
+    SHOP_STATUS_APPROVED,
+)
 from src.utils.logger import logger
 from src.utils.response import error, ok, parse_body
+
+_PINCODE_RE = re.compile(r"^\d{6}$")
 
 
 def handler(event: dict, context) -> dict:
@@ -29,20 +50,22 @@ def handler(event: dict, context) -> dict:
         order_id = (event.get("pathParameters") or {}).get("orderId", "")
         return _get_order(event, order_id)
 
-    return error("Route not found", 404)
+    return error(ERR_ROUTE_NOT_FOUND, 404)
 
 
 def _discover_shops(event: dict) -> dict:
     """Public — no auth needed to browse shops (US-10)."""
     body = parse_body(event)
-    pincode: str = body.get("pincode", "")
+    pincode: str = body.get("pincode", "").strip()
     category: str = body.get("category", "")
 
     if not pincode:
-        return error("pincode is required", 400)
+        return error(ERR_PINCODE_REQUIRED, 400)
+    if not _PINCODE_RE.match(pincode):
+        return error(ERR_PINCODE_FORMAT, 400)
 
-    shops = dynamo.get_shops_by_pincode(pincode)
-    shops = [s for s in shops if s.get("status") == "approved"]
+    shops = db.get_shops_by_pincode(pincode)
+    shops = [s for s in shops if s.get("status") == SHOP_STATUS_APPROVED]
     if category:
         shops = [s for s in shops if s.get("category") == category]
 
@@ -62,13 +85,13 @@ def _place_order(event: dict) -> dict:
     notes: str = body.get("notes", "")
 
     if not shop_id or not items_raw:
-        return error("shopId and items are required", 400)
+        return error(ERR_SHOP_ID_AND_ITEMS_REQUIRED, 400)
     if len(items_raw) > config.MAX_ORDER_ITEMS:
-        return error(f"Too many items (max {config.MAX_ORDER_ITEMS})", 400)
+        return error(ERR_TOO_MANY_ITEMS.format(config.MAX_ORDER_ITEMS), 400)
 
-    shop = dynamo.get_shop(shop_id)
+    shop = db.get_shop(shop_id)
     if not shop:
-        return error("Shop not found", 404)
+        return error(ERR_SHOP_NOT_FOUND, 404)
 
     try:
         order_items = [
@@ -81,9 +104,20 @@ def _place_order(event: dict) -> dict:
             for i in items_raw
         ]
     except (KeyError, ValueError) as exc:
-        return error(f"Invalid item data: {str(exc)}", 400)
+        return error(ERR_INVALID_ITEM_DATA.format(str(exc)), 400)
 
-    total = sum(item.qty * item.price for item in order_items)
+    if any(item.qty <= 0 for item in order_items):
+        return error(ERR_ITEM_QTY_POSITIVE, 400)
+    if any(item.price < 0 for item in order_items):
+        return error(ERR_ITEM_PRICE_NEGATIVE, 400)
+
+    # Use Decimal arithmetic to avoid float rounding errors on currency
+    total = float(
+        sum(
+            Decimal(str(item.qty)) * Decimal(str(item.price))
+            for item in order_items
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    )
     now = datetime.now(timezone.utc).isoformat()
 
     order = Order(
@@ -91,13 +125,13 @@ def _place_order(event: dict) -> dict:
         userId=user_id,
         shopId=shop_id,
         items=order_items,
-        totalAmount=round(total, 2),
+        totalAmount=total,
         deliveryAddress=delivery_address,
         notes=notes,
         createdAt=now,
         updatedAt=now,
     )
-    dynamo.save_order(order.to_dynamo())
+    db.save_order(order.to_dynamo())
     logger.info("order_placed", user_id=user_id, shop_id=shop_id,
                 order_id=order.orderId, total=order.totalAmount)
 
@@ -111,7 +145,7 @@ def _place_order(event: dict) -> dict:
         "orderId": order.orderId,
         "status": order.status.value,
         "totalAmount": order.totalAmount,
-        "message": f"ऑर्डर #{order.orderId[:8]} कन्फर्म हो गया।",
+        "message": MSG_ORDER_CONFIRMED.format(order.orderId[:ORDER_ID_DISPLAY_LEN]),
     }, status_code=201)
 
 
@@ -121,14 +155,14 @@ def _get_order(event: dict, order_id: str) -> dict:
         return auth_err
 
     if not order_id:
-        return error("orderId is required", 400)
+        return error(ERR_ORDER_ID_REQUIRED, 400)
 
-    order = dynamo.get_order(order_id)
+    order = db.get_order(order_id)
     if not order:
-        return error("Order not found", 404)
+        return error(ERR_ORDER_NOT_FOUND, 404)
 
     # Users can only see their own orders
     if order.get("userId") != user_id:
-        return error("Forbidden", 403)
+        return error(ERR_FORBIDDEN, 403)
 
     return ok(order)

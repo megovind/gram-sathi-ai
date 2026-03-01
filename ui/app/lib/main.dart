@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 
 import 'core/router/app_router.dart';
@@ -14,6 +15,23 @@ void main() async {
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
+  ]);
+
+  // Make status bar transparent so gradient screens bleed through properly
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+    statusBarBrightness: Brightness.dark,
+  ));
+
+  // Preload fonts for all supported Indian scripts (avoids "missing characters" on web)
+  await GoogleFonts.pendingFonts([
+    GoogleFonts.notoSansDevanagari(),
+    GoogleFonts.notoSansTamil(),
+    GoogleFonts.notoSansTelugu(),
+    GoogleFonts.notoSansKannada(),
+    GoogleFonts.notoSansBengali(),
+    GoogleFonts.notoSansGujarati(),
   ]);
 
   final storage = await StorageService.init();
@@ -34,7 +52,7 @@ class GramSathiApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        Provider<StorageService>.value(value: storage),
+        ChangeNotifierProvider<StorageService>.value(value: storage),
         Provider<ApiService>.value(value: api),
         Provider<AudioService>(create: (_) => AudioService()),
       ],

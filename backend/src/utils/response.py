@@ -8,7 +8,7 @@ def ok(body: Any, status_code: int = 200) -> dict:
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Credentials": True,
+            "Access-Control-Allow-Credentials": "true",
         },
         "body": json.dumps(body, default=str),
     }
@@ -23,7 +23,7 @@ def error(message: str, status_code: int = 400, details: Optional[Any] = None) -
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Credentials": True,
+            "Access-Control-Allow-Credentials": "true",
         },
         "body": json.dumps(body, default=str),
     }

@@ -1,3 +1,5 @@
+import '../../core/constants/app_constants.dart';
+
 class CartItem {
   final String itemId;
   final String name;
@@ -39,7 +41,7 @@ class OrderModel {
   factory OrderModel.fromJson(Map<String, dynamic> json) => OrderModel(
         orderId: json['orderId'] as String,
         shopId: json['shopId'] as String? ?? '',
-        status: json['status'] as String? ?? 'pending',
+        status: json['status'] as String? ?? AppConstants.orderStatusPending,
         totalAmount: (json['totalAmount'] as num?)?.toDouble() ?? 0,
         message: json['message'] as String?,
       );

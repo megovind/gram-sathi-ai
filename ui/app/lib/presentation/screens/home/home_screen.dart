@@ -6,13 +6,15 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/router/app_router.dart';
 import '../../../data/services/storage_service.dart';
+import '../../widgets/app_icon_widget.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final storage = context.read<StorageService>();
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -25,28 +27,24 @@ class HomeScreen extends StatelessWidget {
               // Header
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Icon(Icons.record_voice_over, color: Colors.white, size: 28),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: const AppIconWidget(size: 48, fit: BoxFit.fill),
                   ),
                   const SizedBox(width: 12),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        AppStrings.appName,
-                        style: TextStyle(
+                      Text(
+                        strings.appName,
+                        style: const TextStyle(
                           fontSize: 22,
                           fontWeight: FontWeight.bold,
                           color: AppColors.primary,
                         ),
                       ),
                       Text(
-                        AppStrings.tagline,
+                        strings.tagline,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
@@ -54,7 +52,8 @@ class HomeScreen extends StatelessWidget {
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.settings_outlined, color: AppColors.textSecondary),
-                    onPressed: () {},
+                    tooltip: strings.settingsTooltip,
+                    onPressed: () => context.push('${AppRoutes.languageSelection}?change=1'),
                   ),
                 ],
               ),
@@ -62,7 +61,7 @@ class HomeScreen extends StatelessWidget {
 
               // Greeting
               Text(
-                AppStrings.howCanIHelp,
+                strings.howCanIHelp,
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
               const SizedBox(height: 24),
@@ -74,8 +73,8 @@ class HomeScreen extends StatelessWidget {
                     child: _ActionCard(
                       icon: Icons.health_and_safety,
                       iconColor: AppColors.secondary,
-                      title: 'स्वास्थ्य सलाह',
-                      subtitle: 'Health Advice',
+                      title: strings.healthCard,
+                      subtitle: strings.healthAdviceLabel,
                       gradient: [const Color(0xFFE8F8F0), const Color(0xFFD4F0E3)],
                       onTap: () => context.push(AppRoutes.health),
                     ),
@@ -85,8 +84,8 @@ class HomeScreen extends StatelessWidget {
                     child: _ActionCard(
                       icon: Icons.store_rounded,
                       iconColor: AppColors.accent,
-                      title: 'दुकान से मँगाएँ',
-                      subtitle: 'Order from Shop',
+                      title: strings.commerceCard,
+                      subtitle: strings.orderFromShopLabel,
                       gradient: [const Color(0xFFFFF3E0), const Color(0xFFFFE0B2)],
                       onTap: () => context.push(AppRoutes.shops),
                     ),
@@ -129,19 +128,19 @@ class HomeScreen extends StatelessWidget {
                       const SizedBox(width: 16),
                       Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
-                        children: const [
+                        children: [
                           Text(
-                            'आवाज़ से पूछें',
-                            style: TextStyle(
+                            strings.voiceAsk,
+                            style: const TextStyle(
                               color: Colors.white,
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          SizedBox(height: 2),
+                          const SizedBox(height: 2),
                           Text(
-                            'Tap to ask by voice',
-                            style: TextStyle(color: Colors.white70, fontSize: 13),
+                            strings.voiceAskSubtitle,
+                            style: const TextStyle(color: Colors.white70, fontSize: 13),
                           ),
                         ],
                       ),
@@ -154,26 +153,26 @@ class HomeScreen extends StatelessWidget {
               const SizedBox(height: 24),
 
               // Quick links
-              Text('त्वरित सेवाएँ', style: Theme.of(context).textTheme.titleLarge),
+              Text(strings.quickServices, style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 12),
               _QuickLink(
                 icon: Icons.local_hospital_outlined,
-                label: 'नजदीकी क्लीनिक',
-                sublabel: 'Nearby Clinics',
-                onTap: () => context.push(AppRoutes.nearby),
+                label: strings.nearbyClinicLink,
+                sublabel: strings.nearbyClinicSublabel,
+                onTap: () => context.push(AppRoutes.health),
               ),
               _QuickLink(
                 icon: Icons.shopping_bag_outlined,
-                label: 'मेरे ऑर्डर',
-                sublabel: 'My Orders',
+                label: strings.myOrdersLink,
+                sublabel: strings.myOrdersSublabel,
                 onTap: () => context.push(AppRoutes.shops),
               ),
               // Show shop dashboard if user is a shop owner
               if (storage.shopId != null)
                 _QuickLink(
                   icon: Icons.storefront_outlined,
-                  label: 'मेरी दुकान',
-                  sublabel: 'My Shop Dashboard',
+                  label: strings.myShopLink,
+                  sublabel: strings.myShopSublabel,
                   onTap: () => context.push(AppRoutes.shopDashboard),
                 ),
             ],
@@ -209,11 +208,25 @@ class _ActionCard extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(colors: gradient, begin: Alignment.topLeft, end: Alignment.bottomRight),
             borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                color: iconColor.withOpacity(0.15),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(icon, color: iconColor, size: 32),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 26),
+              ),
               const SizedBox(height: 10),
               Text(title,
                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
@@ -239,19 +252,41 @@ class _QuickLink extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) => ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        leading: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceVariant,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(icon, color: AppColors.primary, size: 22),
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
-        title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(sublabel, style: const TextStyle(fontSize: 12)),
-        trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: AppColors.textHint),
-        onTap: onTap,
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          leading: Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppColors.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: AppColors.primary, size: 22),
+          ),
+          title: Text(label, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+          subtitle: Text(sublabel, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+          trailing: Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.arrow_forward_ios, size: 14, color: AppColors.primary),
+          ),
+          onTap: onTap,
+        ),
       );
 }

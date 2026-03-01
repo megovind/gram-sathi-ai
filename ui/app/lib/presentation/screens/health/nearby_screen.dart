@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../data/services/api_service.dart';
 import '../../../data/services/storage_service.dart';
@@ -16,14 +17,41 @@ class NearbyScreen extends StatefulWidget {
 class _NearbyScreenState extends State<NearbyScreen> {
   final _pincodeController = TextEditingController();
   late ApiService _apiService;
+  late StorageService _storage;
   List<Map<String, dynamic>> _facilities = [];
   bool _isLoading = false;
   bool _searched = false;
 
   @override
+  void initState() {
+    super.initState();
+    _apiService = context.read<ApiService>();
+    _storage = context.read<StorageService>();
+    _initPincodeAndSearch();
+  }
+
+  /// Pre-fill pincode from storage or default (Kota 324008) and trigger search once on open.
+  void _initPincodeAndSearch() {
+    final savedPincode = _storage.lastSearchedPincode;
+    final pincode = savedPincode != null && savedPincode.length == 6
+        ? savedPincode
+        : AppConstants.defaultSeedPincode;
+    _pincodeController.text = pincode;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+  }
+
+  @override
+  void dispose() {
+    _pincodeController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
-      appBar: AppBar(title: const Text(AppStrings.nearbyClinics)),
+      appBar: AppBar(title: Text(strings.nearbyClinics)),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -34,9 +62,9 @@ class _NearbyScreenState extends State<NearbyScreen> {
                   child: TextField(
                     controller: _pincodeController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      hintText: AppStrings.enterPincode,
-                      prefixIcon: Icon(Icons.location_on_outlined),
+                    decoration: InputDecoration(
+                      hintText: strings.enterPincode,
+                      prefixIcon: const Icon(Icons.location_on_outlined),
                     ),
                     maxLength: 6,
                   ),
@@ -52,26 +80,26 @@ class _NearbyScreenState extends State<NearbyScreen> {
                           width: 20, height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                         )
-                      : const Text('खोजें'),
+                      : Text(strings.searchButton),
                 ),
               ],
             ),
             const SizedBox(height: 16),
             Expanded(
               child: !_searched
-                  ? const Center(
+                  ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.local_hospital_outlined, size: 64, color: AppColors.textHint),
-                          SizedBox(height: 12),
-                          Text('अपना पिनकोड डालें',
-                              style: TextStyle(color: AppColors.textSecondary, fontSize: 16)),
+                          const Icon(Icons.local_hospital_outlined, size: 64, color: AppColors.textHint),
+                          const SizedBox(height: 12),
+                          Text(strings.enterPincode,
+                              style: const TextStyle(color: AppColors.textSecondary, fontSize: 16)),
                         ],
                       ),
                     )
                   : _facilities.isEmpty
-                      ? const Center(child: Text('इस पिनकोड में कोई सेवा नहीं मिली'))
+                      ? Center(child: Text(strings.noFacilitiesFound))
                       : ListView.separated(
                           itemCount: _facilities.length,
                           separatorBuilder: (_, __) => const SizedBox(height: 8),
@@ -86,19 +114,21 @@ class _NearbyScreenState extends State<NearbyScreen> {
 
   Future<void> _search() async {
     final pincode = _pincodeController.text.trim();
-    if (pincode.length != 6) {
+    final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+    if (pincode.length != AppConstants.pincodeLength) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('6 अंकों का पिनकोड डालें')),
+        SnackBar(content: Text(strings.pincodeError)),
       );
       return;
     }
     setState(() { _isLoading = true; _searched = false; });
     try {
       final results = await _apiService.getNearbyFacilities(pincode);
+      await _storage.setLastSearchedPincode(pincode);
       setState(() { _facilities = results; _searched = true; });
     } catch (_) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(AppStrings.networkError)),
+        SnackBar(content: Text(strings.networkError)),
       );
     } finally {
       setState(() => _isLoading = false);

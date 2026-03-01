@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/router/app_router.dart';
 import '../../../data/services/api_service.dart';
@@ -36,11 +37,14 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
       return;
     }
     try {
-      final analytics = await _apiService.getShopAnalytics(shopId);
-      final orders = await _apiService.getShopOrders(shopId);
+      // Run both network calls in parallel — cuts wait time roughly in half
+      final results = await Future.wait([
+        _apiService.getShopAnalytics(shopId),
+        _apiService.getShopOrders(shopId),
+      ]);
       setState(() {
-        _analytics = analytics;
-        _orders = orders;
+        _analytics = results[0] as Map<String, dynamic>;
+        _orders = results[1] as List<Map<String, dynamic>>;
         _isLoading = false;
       });
     } catch (_) {
@@ -50,14 +54,15 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final storage = context.read<StorageService>();
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
 
     return Scaffold(
-      appBar: AppBar(title: const Text(AppStrings.shopDashboard)),
+      appBar: AppBar(title: Text(strings.shopDashboard)),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : storage.shopId == null
-              ? _NoShopState()
+              ? _NoShopState(strings: strings)
               : RefreshIndicator(
                   onRefresh: _load,
                   child: SingleChildScrollView(
@@ -71,7 +76,7 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
                           children: [
                             Expanded(
                               child: _StatCard(
-                                label: AppStrings.todayRevenue,
+                                label: strings.todayRevenue,
                                 value:
                                     '₹${(_analytics?['today']?['revenue'] ?? 0).toStringAsFixed(0)}',
                                 icon: Icons.currency_rupee,
@@ -81,7 +86,7 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
                             const SizedBox(width: 12),
                             Expanded(
                               child: _StatCard(
-                                label: 'आज के ऑर्डर',
+                                label: strings.todayOrders,
                                 value:
                                     '${_analytics?['today']?['orderCount'] ?? 0}',
                                 icon: Icons.shopping_bag_outlined,
@@ -95,7 +100,7 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
                           children: [
                             Expanded(
                               child: _StatCard(
-                                label: 'कुल ऑर्डर',
+                                label: strings.totalOrders,
                                 value:
                                     '${_analytics?['allTime']?['orderCount'] ?? 0}',
                                 icon: Icons.receipt_long_outlined,
@@ -105,7 +110,7 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
                             const SizedBox(width: 12),
                             Expanded(
                               child: _StatCard(
-                                label: 'बाकी ऑर्डर',
+                                label: strings.pendingOrders,
                                 value:
                                     '${_analytics?['allTime']?['pendingOrders'] ?? 0}',
                                 icon: Icons.pending_outlined,
@@ -122,20 +127,20 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
                             '${AppRoutes.inventory}?shopId=${storage.shopId}',
                           ),
                           icon: const Icon(Icons.inventory_2_outlined),
-                          label: const Text(AppStrings.inventory),
+                          label: Text(strings.inventory),
                         ),
                         const SizedBox(height: 24),
 
                         // Recent orders
-                        Text(AppStrings.newOrders,
+                        Text(strings.newOrders,
                             style: Theme.of(context).textTheme.titleLarge),
                         const SizedBox(height: 12),
                         if (_orders.isEmpty)
-                          const Center(
+                          Center(
                             child: Padding(
-                              padding: EdgeInsets.all(24),
-                              child: Text('अभी कोई ऑर्डर नहीं है',
-                                  style: TextStyle(color: AppColors.textSecondary)),
+                              padding: const EdgeInsets.all(24),
+                              child: Text(strings.noOrders,
+                                  style: const TextStyle(color: AppColors.textSecondary)),
                             ),
                           )
                         else
@@ -149,6 +154,9 @@ class _ShopDashboardScreenState extends State<ShopDashboardScreen> {
 }
 
 class _NoShopState extends StatelessWidget {
+  final LocalizedStrings strings;
+  const _NoShopState({required this.strings});
+
   @override
   Widget build(BuildContext context) => Center(
         child: Padding(
@@ -158,18 +166,18 @@ class _NoShopState extends StatelessWidget {
             children: [
               const Icon(Icons.storefront_outlined, size: 72, color: AppColors.textHint),
               const SizedBox(height: 16),
-              const Text('आपकी दुकान रजिस्टर नहीं है',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              Text(strings.shopNotRegistered,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text(
-                'अपनी दुकान रजिस्टर करें और GramSathi पर बेचना शुरू करें',
+              Text(
+                strings.registerShopPrompt,
                 textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textSecondary),
+                style: const TextStyle(color: AppColors.textSecondary),
               ),
               const SizedBox(height: 24),
               ElevatedButton(
                 onPressed: () {},
-                child: const Text('दुकान रजिस्टर करें'),
+                child: Text(strings.registerShopButton),
               ),
             ],
           ),
@@ -218,9 +226,9 @@ class _OrderTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = order['status'] as String? ?? '';
-    final statusColor = status == 'pending'
+    final statusColor = status == AppConstants.orderStatusPending
         ? AppColors.warning
-        : status == 'confirmed'
+        : status == AppConstants.orderStatusConfirmed
             ? AppColors.primary
             : AppColors.success;
 
@@ -235,7 +243,7 @@ class _OrderTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '#${(order['orderId'] as String? ?? '').substring(0, 8)}',
+                    '#${(order['orderId'] as String? ?? '').substring(0, AppConstants.orderIdDisplayLength)}',
                     style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
                   Text(

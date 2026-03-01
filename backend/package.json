@@ -5,12 +5,11 @@
   "scripts": {
     "deploy:dev": "serverless deploy --stage dev",
     "deploy:prod": "serverless deploy --stage prod",
-    "dev": "serverless offline start",
+    "dev": "serverless offline start --verbose",
     "remove": "serverless remove"
   },
   "devDependencies": {
     "serverless": "^4.6.3",
-    "serverless-offline": "^14.4.0",
-    "serverless-python-requirements": "^6.1.0"
+    "serverless-offline": "^14.4.0"
   }
 }

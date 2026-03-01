@@ -95,10 +95,10 @@ def test_place_order_shop_not_found(dynamo_tables):
 @mock_aws
 def test_place_order_success(dynamo_tables, monkeypatch):
     # Seed an approved shop
-    from src.services.dynamodb_service import dynamo
+    from src.services.database import db
     from src.handlers.commerce import handler
 
-    dynamo.save_shop({
+    db.save_shop({
         "shopId": "shop-001",
         "ownerId": "owner-1",
         "name": "Ramu Kirana",

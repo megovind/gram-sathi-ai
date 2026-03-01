@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/router/app_router.dart';
 import '../../../data/models/shop_model.dart';
@@ -19,14 +20,40 @@ class ShopsScreen extends StatefulWidget {
 class _ShopsScreenState extends State<ShopsScreen> {
   final _pincodeController = TextEditingController();
   late ApiService _apiService;
+  late StorageService _storage;
   List<ShopModel> _shops = [];
   bool _isLoading = false;
   bool _searched = false;
 
   @override
+  void initState() {
+    super.initState();
+    _apiService = context.read<ApiService>();
+    _storage = context.read<StorageService>();
+    _initPincodeAndSearch();
+  }
+
+  void _initPincodeAndSearch() {
+    final savedPincode = _storage.lastSearchedPincode;
+    final pincode = savedPincode != null && savedPincode.length == 6
+        ? savedPincode
+        : AppConstants.defaultSeedPincode;
+    _pincodeController.text = pincode;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _search());
+  }
+
+  @override
+  void dispose() {
+    _pincodeController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
-      appBar: AppBar(title: const Text(AppStrings.nearbyShops)),
+      appBar: AppBar(title: Text(strings.nearbyShops)),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -37,9 +64,9 @@ class _ShopsScreenState extends State<ShopsScreen> {
                   child: TextField(
                     controller: _pincodeController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      hintText: AppStrings.enterPincode,
-                      prefixIcon: Icon(Icons.location_on_outlined),
+                    decoration: InputDecoration(
+                      hintText: strings.enterPincode,
+                      prefixIcon: const Icon(Icons.location_on_outlined),
                     ),
                     maxLength: 6,
                   ),
@@ -53,20 +80,21 @@ class _ShopsScreenState extends State<ShopsScreen> {
                           width: 20, height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                         )
-                      : const Text('खोजें'),
+                      : Text(strings.searchButton),
                 ),
               ],
             ),
             const SizedBox(height: 16),
             Expanded(
               child: !_searched
-                  ? const _EmptySearch()
+                  ? _EmptySearch(strings: strings)
                   : _shops.isEmpty
-                      ? const Center(child: Text('इस क्षेत्र में कोई दुकान नहीं मिली'))
+                      ? Center(child: Text(strings.noShopsFound))
                       : ListView.separated(
                           itemCount: _shops.length,
                           separatorBuilder: (_, __) => const SizedBox(height: 10),
                           itemBuilder: (_, i) => _ShopCard(
+                            strings: strings,
                             shop: _shops[i],
                             onTap: () => context.push(
                               '${AppRoutes.order}?shopId=${_shops[i].shopId}',
@@ -82,19 +110,21 @@ class _ShopsScreenState extends State<ShopsScreen> {
 
   Future<void> _search() async {
     final pincode = _pincodeController.text.trim();
-    if (pincode.length != 6) {
+    final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+    if (pincode.length != AppConstants.pincodeLength) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('6 अंकों का पिनकोड डालें')),
+        SnackBar(content: Text(strings.pincodeError)),
       );
       return;
     }
     setState(() { _isLoading = true; _searched = false; });
     try {
       final results = await _apiService.getNearbyShops(pincode: pincode);
+      await _storage.setLastSearchedPincode(pincode);
       setState(() { _shops = results; _searched = true; });
     } catch (_) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(AppStrings.networkError)),
+        SnackBar(content: Text(strings.networkError)),
       );
     } finally {
       setState(() => _isLoading = false);
@@ -103,9 +133,10 @@ class _ShopsScreenState extends State<ShopsScreen> {
 }
 
 class _ShopCard extends StatelessWidget {
+  final LocalizedStrings strings;
   final ShopModel shop;
   final VoidCallback onTap;
-  const _ShopCard({required this.shop, required this.onTap});
+  const _ShopCard({required this.strings, required this.shop, required this.onTap});
 
   @override
   Widget build(BuildContext context) => Card(
@@ -139,7 +170,7 @@ class _ShopCard extends StatelessWidget {
                             style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
                       const SizedBox(height: 4),
                       Text(
-                        '${shop.inventory.length} items available',
+                        '${shop.inventory.length} ${strings.itemsAvailable}',
                         style: const TextStyle(color: AppColors.primary, fontSize: 12),
                       ),
                     ],
@@ -154,20 +185,21 @@ class _ShopCard extends StatelessWidget {
 }
 
 class _EmptySearch extends StatelessWidget {
-  const _EmptySearch();
+  final LocalizedStrings strings;
+  const _EmptySearch({required this.strings});
 
   @override
-  Widget build(BuildContext context) => const Center(
+  Widget build(BuildContext context) => Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.store_outlined, size: 64, color: AppColors.textHint),
-            SizedBox(height: 12),
-            Text('अपना पिनकोड डालें',
-                style: TextStyle(color: AppColors.textSecondary, fontSize: 16)),
-            SizedBox(height: 4),
-            Text('नजदीकी दुकानें दिखेंगी',
-                style: TextStyle(color: AppColors.textHint, fontSize: 13)),
+            const Icon(Icons.store_outlined, size: 64, color: AppColors.textHint),
+            const SizedBox(height: 12),
+            Text(strings.enterPincode,
+                style: const TextStyle(color: AppColors.textSecondary, fontSize: 16)),
+            const SizedBox(height: 4),
+            Text(strings.nearbyShopsWillShow,
+                style: const TextStyle(color: AppColors.textHint, fontSize: 13)),
           ],
         ),
       );

@@ -4,15 +4,49 @@ import '../models/message_model.dart';
 import '../models/shop_model.dart';
 import '../models/order_model.dart';
 import '../../core/constants/api_endpoints.dart';
+import '../../core/constants/app_constants.dart';
 
 class ApiService {
   final Dio _dio;
 
+  // Separate Dio for direct S3 uploads: no Authorization header, generous
+  // receive timeout for slow rural connections (2G ~50 kbps for a 30s m4a ≈ 200 kB).
+  final Dio _s3Dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: AppConstants.apiConnectTimeoutSeconds),
+      receiveTimeout: const Duration(seconds: AppConstants.s3UploadReceiveTimeoutSeconds),
+    ),
+  )..interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          if (kDebugMode) {
+            print('[S3 Upload] PUT ${options.path}');
+            print('[S3 Upload] Headers: ${options.headers}');
+          }
+          handler.next(options);
+        },
+        onResponse: (response, handler) {
+          if (kDebugMode) {
+            print('[S3 Upload] Response ${response.statusCode}');
+          }
+          handler.next(response);
+        },
+        onError: (DioException e, handler) {
+          if (kDebugMode) {
+            print('[S3 Upload Error] ${e.type} → ${e.response?.statusCode}');
+            print('[S3 Upload Error] Body: ${e.response?.data}');
+            print('[S3 Upload Error] Message: ${e.message}');
+          }
+          handler.next(e);
+        },
+      ),
+    );
+
   ApiService({String? token})
       : _dio = Dio(
           BaseOptions(
-            connectTimeout: const Duration(seconds: 15),
-            receiveTimeout: const Duration(seconds: 30),
+            connectTimeout: const Duration(seconds: AppConstants.apiConnectTimeoutSeconds),
+            receiveTimeout: const Duration(seconds: AppConstants.apiReceiveTimeoutSeconds),
             headers: {'Content-Type': 'application/json'},
           ),
         ) {
@@ -24,7 +58,7 @@ class ApiService {
         onError: (DioException e, handler) {
           if (kDebugMode) {
             // ignore: avoid_print
-            print('[API Error] \${e.requestOptions.method} \${e.requestOptions.path} → \${e.response?.statusCode}');
+            print('[API Error] ${e.requestOptions.method} ${e.requestOptions.path} → ${e.response?.statusCode}');
           }
           handler.next(e);
         },
@@ -91,7 +125,7 @@ class ApiService {
 
   Future<Map<String, dynamic>> getAudioUploadUrl({
     required String fileName,
-    String contentType = 'audio/m4a',
+    String contentType = AppConstants.defaultAudioContentType,
   }) async {
     final response = await _dio.post(
       ApiEndpoints.audioUploadUrl,
@@ -101,13 +135,12 @@ class ApiService {
   }
 
   Future<void> uploadAudioToS3(String uploadUrl, List<int> audioBytes) async {
-    final plainDio = Dio();
-    await plainDio.put(
+    await _s3Dio.put(
       uploadUrl,
       data: Stream.fromIterable([audioBytes]),
       options: Options(
         headers: {
-          'Content-Type': 'audio/m4a',
+          'Content-Type': AppConstants.defaultAudioContentType,
           'Content-Length': audioBytes.length,
         },
       ),
@@ -117,18 +150,30 @@ class ApiService {
   // ── Health ─────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> queryHealth({
-    required String text,
+    String? text,
+    String? audioS3Key,
     required String language,
     String? conversationId,
     bool generateSummary = false,
+    String? pincode,
+    double? latitude,
+    double? longitude,
   }) async {
+    assert(
+      (text != null && text.isNotEmpty) || audioS3Key != null,
+      'Either text or audioS3Key must be provided',
+    );
     final response = await _dio.post(
       ApiEndpoints.healthQuery,
       data: {
-        'text': text,
+        if (text != null && text.isNotEmpty) 'text': text,
+        if (audioS3Key != null) 'audioS3Key': audioS3Key,
         'language': language,
         if (conversationId != null) 'conversationId': conversationId,
         'generateSummary': generateSummary,
+        if (pincode != null && pincode.length == 6) 'pincode': pincode,
+        if (latitude != null) 'latitude': latitude,
+        if (longitude != null) 'longitude': longitude,
       },
     );
     return response.data as Map<String, dynamic>;

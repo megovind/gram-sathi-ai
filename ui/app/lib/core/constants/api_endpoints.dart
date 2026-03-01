@@ -3,7 +3,7 @@ class ApiEndpoints {
 
   static const baseUrl = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://localhost:3000',
+    defaultValue: 'https://erem1hc30b.execute-api.ap-south-1.amazonaws.com/dev',
   );
 
   // User / Auth

@@ -11,8 +11,24 @@ import uuid
 from datetime import datetime, date, timezone
 
 from src.models.shop import InventoryItem, Shop, ShopStatus
-from src.services.dynamodb_service import dynamo
+from src.services.database import db
 from src.utils.auth import require_auth
+from src.utils.constants import (
+    DEFAULT_INVENTORY_UNIT,
+    ERR_FORBIDDEN,
+    ERR_FORBIDDEN_NOT_YOUR_SHOP,
+    ERR_INVALID_ITEM_DATA,
+    ERR_ITEM_PRICE_NEGATIVE,
+    ERR_ITEMS_LIST_REQUIRED,
+    ERR_MISSING_FIELDS,
+    ERR_ROUTE_NOT_FOUND,
+    ERR_SHOP_ID_REQUIRED,
+    ERR_SHOP_NOT_FOUND,
+    ERR_STOCK_QTY_NEGATIVE,
+    MSG_SHOP_REGISTERED,
+    ORDER_STATUS_PENDING,
+    PRIVATE_SHOP_FIELDS,
+)
 from src.utils.response import error, ok, parse_body
 
 
@@ -33,7 +49,7 @@ def handler(event: dict, context) -> dict:
     if method == "GET" and path.endswith("/analytics"):
         return _get_analytics(event, shop_id)
 
-    return error("Route not found", 404)
+    return error(ERR_ROUTE_NOT_FOUND, 404)
 
 
 def _register_shop(event: dict) -> dict:
@@ -46,7 +62,7 @@ def _register_shop(event: dict) -> dict:
     required = ["name", "ownerName", "phone", "pincode"]
     missing = [f for f in required if not body.get(f)]
     if missing:
-        return error(f"Missing fields: {', '.join(missing)}", 400)
+        return error(ERR_MISSING_FIELDS.format(', '.join(missing)), 400)
 
     shop = Shop(
         shopId=str(uuid.uuid4()),
@@ -60,23 +76,21 @@ def _register_shop(event: dict) -> dict:
         lng=body.get("lng"),
         status=ShopStatus.PENDING,
     )
-    dynamo.save_shop(shop.to_dynamo())
+    db.save_shop(shop.to_dynamo())
 
     return ok({
         "shopId": shop.shopId,
         "status": shop.status.value,
-        "message": "Shop registered. Awaiting admin approval.",
+        "message": MSG_SHOP_REGISTERED,
     }, status_code=201)
 
 
 def _get_shop(shop_id: str) -> dict:
     """Public endpoint — anyone can view an approved shop."""
-    shop = dynamo.get_shop(shop_id)
+    shop = db.get_shop(shop_id)
     if not shop:
-        return error("Shop not found", 404)
-    # Strip internal fields before returning to public callers
-    _PRIVATE_FIELDS = {"ownerId", "phone"}
-    public_shop = {k: v for k, v in shop.items() if k not in _PRIVATE_FIELDS}
+        return error(ERR_SHOP_NOT_FOUND, 404)
+    public_shop = {k: v for k, v in shop.items() if k not in PRIVATE_SHOP_FIELDS}
     return ok(public_shop)
 
 
@@ -87,21 +101,21 @@ def _update_inventory(event: dict, shop_id: str) -> dict:
         return auth_err
 
     if not shop_id:
-        return error("shopId is required", 400)
+        return error(ERR_SHOP_ID_REQUIRED, 400)
 
-    shop_data = dynamo.get_shop(shop_id)
+    shop_data = db.get_shop(shop_id)
     if not shop_data:
-        return error("Shop not found", 404)
+        return error(ERR_SHOP_NOT_FOUND, 404)
 
     if shop_data.get("ownerId") != user_id:
-        return error("Forbidden — not your shop", 403)
+        return error(ERR_FORBIDDEN_NOT_YOUR_SHOP, 403)
 
     body = parse_body(event)
     items_raw: list = body.get("items", [])
     replace: bool = body.get("replace", False)
 
     if not items_raw:
-        return error("items list is required", 400)
+        return error(ERR_ITEMS_LIST_REQUIRED, 400)
 
     try:
         new_items = [
@@ -110,14 +124,19 @@ def _update_inventory(event: dict, shop_id: str) -> dict:
                 name=i["name"],
                 nameHindi=i.get("nameHindi"),
                 price=float(i["price"]),
-                unit=i.get("unit", "piece"),
+                unit=i.get("unit", DEFAULT_INVENTORY_UNIT),
                 stockQty=int(i.get("stockQty", 0)),
                 category=i.get("category"),
             )
             for i in items_raw
         ]
     except (KeyError, ValueError) as exc:
-        return error(f"Invalid item data: {str(exc)}", 400)
+        return error(ERR_INVALID_ITEM_DATA.format(str(exc)), 400)
+
+    if any(item.price < 0 for item in new_items):
+        return error(ERR_ITEM_PRICE_NEGATIVE, 400)
+    if any(item.stockQty < 0 for item in new_items):
+        return error(ERR_STOCK_QTY_NEGATIVE, 400)
 
     shop = Shop.from_dynamo(shop_data)
     if replace:
@@ -129,7 +148,7 @@ def _update_inventory(event: dict, shop_id: str) -> dict:
         shop.inventory = list(existing_map.values())
 
     shop.updatedAt = datetime.now(timezone.utc).isoformat()
-    dynamo.save_shop(shop.to_dynamo())
+    db.save_shop(shop.to_dynamo())
 
     return ok({"shopId": shop_id, "itemCount": len(shop.inventory)})
 
@@ -141,15 +160,15 @@ def _get_orders(event: dict, shop_id: str) -> dict:
         return auth_err
 
     if not shop_id:
-        return error("shopId is required", 400)
+        return error(ERR_SHOP_ID_REQUIRED, 400)
 
-    shop_data = dynamo.get_shop(shop_id)
+    shop_data = db.get_shop(shop_id)
     if not shop_data:
-        return error("Shop not found", 404)
+        return error(ERR_SHOP_NOT_FOUND, 404)
     if shop_data.get("ownerId") != user_id:
-        return error("Forbidden", 403)
+        return error(ERR_FORBIDDEN, 403)
 
-    orders = dynamo.get_orders_by_shop(shop_id)
+    orders = db.get_orders_by_shop(shop_id)
     return ok({"shopId": shop_id, "orders": orders})
 
 
@@ -160,19 +179,19 @@ def _get_analytics(event: dict, shop_id: str) -> dict:
         return auth_err
 
     if not shop_id:
-        return error("shopId is required", 400)
+        return error(ERR_SHOP_ID_REQUIRED, 400)
 
-    shop_data = dynamo.get_shop(shop_id)
+    shop_data = db.get_shop(shop_id)
     if not shop_data:
-        return error("Shop not found", 404)
+        return error(ERR_SHOP_NOT_FOUND, 404)
     if shop_data.get("ownerId") != user_id:
-        return error("Forbidden", 403)
+        return error(ERR_FORBIDDEN, 403)
 
-    orders = dynamo.get_orders_by_shop(shop_id)
+    orders = db.get_orders_by_shop(shop_id)
     today = date.today().isoformat()
     today_orders = [o for o in orders if o.get("createdAt", "").startswith(today)]
     total_revenue = sum(o.get("totalAmount", 0) for o in today_orders)
-    pending_count = sum(1 for o in orders if o.get("status") == "pending")
+    pending_count = sum(1 for o in orders if o.get("status") == ORDER_STATUS_PENDING)
 
     return ok({
         "shopId": shop_id,

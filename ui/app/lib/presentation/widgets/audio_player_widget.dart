@@ -1,11 +1,25 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import '../../core/constants/app_colors.dart';
-import '../../core/constants/app_strings.dart';
 
 class AudioPlayerWidget extends StatefulWidget {
   final String url;
-  const AudioPlayerWidget({super.key, required this.url});
+  final bool autoPlay;
+  final VoidCallback? onAutoPlayStarted;
+  final String playLabel;
+  final String pauseLabel;
+  final Color? tintColor;
+
+  const AudioPlayerWidget({
+    super.key,
+    required this.url,
+    this.autoPlay = false,
+    this.onAutoPlayStarted,
+    this.playLabel = 'Play',
+    this.pauseLabel = 'Pause',
+    this.tintColor,
+  });
 
   @override
   State<AudioPlayerWidget> createState() => _AudioPlayerWidgetState();
@@ -13,11 +27,32 @@ class AudioPlayerWidget extends StatefulWidget {
 
 class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
   final _player = AudioPlayer();
+  StreamSubscription<PlayerState>? _playerStateSub;
   bool _isPlaying = false;
   bool _isLoading = false;
 
   @override
+  void initState() {
+    super.initState();
+    _playerStateSub = _player.playerStateStream.listen((state) {
+      if (state.processingState == ProcessingState.completed) {
+        if (mounted) setState(() => _isPlaying = false);
+      }
+    });
+    if (widget.autoPlay) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _startAutoPlay());
+    }
+  }
+
+  Future<void> _startAutoPlay() async {
+    if (!mounted) return;
+    widget.onAutoPlayStarted?.call();
+    await _toggle();
+  }
+
+  @override
   void dispose() {
+    _playerStateSub?.cancel();
     _player.dispose();
     super.dispose();
   }
@@ -34,11 +69,6 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
       await _player.setUrl(widget.url);
       await _player.play();
       setState(() => _isPlaying = true);
-      _player.playerStateStream.listen((state) {
-        if (state.processingState == ProcessingState.completed) {
-          if (mounted) setState(() => _isPlaying = false);
-        }
-      });
     } catch (_) {
       // silently fail — audio is optional
     } finally {
@@ -68,14 +98,14 @@ class _AudioPlayerWidgetState extends State<AudioPlayerWidget> {
             else
               Icon(
                 _isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                color: AppColors.primary,
+                color: widget.tintColor ?? AppColors.primary,
                 size: 22,
               ),
             const SizedBox(width: 6),
             Text(
-              _isPlaying ? 'रुकें' : AppStrings.playAudio,
-              style: const TextStyle(
-                color: AppColors.primary,
+              _isPlaying ? widget.pauseLabel : widget.playLabel,
+              style: TextStyle(
+                color: widget.tintColor ?? AppColors.primary,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
               ),

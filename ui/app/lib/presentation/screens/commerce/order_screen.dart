@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_strings.dart';
+import '../../../data/services/storage_service.dart';
 import '../../../data/models/order_model.dart';
 import '../../../data/models/shop_model.dart';
 import '../../../data/services/api_service.dart';
@@ -38,7 +40,7 @@ class _OrderScreenState extends State<OrderScreen> {
       });
     } catch (e) {
       setState(() {
-        _errorMessage = 'दुकान की जानकारी नहीं मिली';
+        _errorMessage = AppStrings.forLanguage(context.read<StorageService>().language).shopInfoNotFound;
         _isLoading = false;
       });
     }
@@ -46,11 +48,13 @@ class _OrderScreenState extends State<OrderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     final totalAmount = _cart.values.fold<double>(0, (s, i) => s + i.subtotal);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_shop?.name ?? 'दुकान से ऑर्डर करें'),
+        title: Text(_shop?.name ?? strings.orderFromShopTitle),
         actions: [
           if (_cart.isNotEmpty)
             Padding(
@@ -67,35 +71,35 @@ class _OrderScreenState extends State<OrderScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _errorMessage != null
-              ? _ErrorState(message: _errorMessage!, onRetry: _loadShop)
+              ? _ErrorState(strings: strings, message: _errorMessage!, onRetry: _loadShop)
               : _shop!.inventory.isEmpty
-                  ? _buildNoItems()
+                  ? _buildNoItems(strings)
                   : Column(
                       children: [
-                        Expanded(child: _buildInventory()),
-                        if (_cart.isNotEmpty) _buildCartBar(totalAmount),
+                        Expanded(child: _buildInventory(strings)),
+                        if (_cart.isNotEmpty) _buildCartBar(strings, totalAmount),
                       ],
                     ),
     );
   }
 
-  Widget _buildNoItems() => Center(
+  Widget _buildNoItems(LocalizedStrings strings) => Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Icon(Icons.inventory_2_outlined, size: 64, color: AppColors.textHint),
             const SizedBox(height: 12),
-            const Text('इस दुकान में अभी कोई सामान नहीं है'),
+            Text(strings.noItemsInShop),
             const SizedBox(height: 16),
             OutlinedButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('वापस जाएँ'),
+              child: Text(strings.goBack),
             ),
           ],
         ),
       );
 
-  Widget _buildInventory() => ListView.separated(
+  Widget _buildInventory(LocalizedStrings strings) => ListView.separated(
         padding: const EdgeInsets.all(16),
         itemCount: _shop!.inventory.length,
         separatorBuilder: (_, __) => const Divider(height: 1),
@@ -121,7 +125,7 @@ class _OrderScreenState extends State<OrderScreen> {
                       ),
                       if (item.stockQty > 0)
                         Text(
-                          'स्टॉक: ${item.stockQty}',
+                          '${strings.stockLabel}: ${item.stockQty}',
                           style: const TextStyle(color: AppColors.textHint, fontSize: 11),
                         ),
                     ],
@@ -130,7 +134,7 @@ class _OrderScreenState extends State<OrderScreen> {
                 if (qty == 0)
                   OutlinedButton(
                     onPressed: item.stockQty == 0 ? null : () => _addToCart(item),
-                    child: Text(item.stockQty == 0 ? 'उपलब्ध नहीं' : 'जोड़ें'),
+                    child: Text(item.stockQty == 0 ? strings.notAvailable : strings.addButton),
                   )
                 else
                   Row(
@@ -145,7 +149,10 @@ class _OrderScreenState extends State<OrderScreen> {
                       IconButton(
                         icon: const Icon(Icons.add_circle_outline),
                         color: AppColors.primary,
-                        onPressed: () => _increaseQty(item.itemId),
+                        // Disable once cart qty reaches available stock
+                        onPressed: (item.stockQty > 0 && qty >= item.stockQty)
+                            ? null
+                            : () => _increaseQty(item.itemId, item.stockQty),
                       ),
                     ],
                   ),
@@ -155,7 +162,7 @@ class _OrderScreenState extends State<OrderScreen> {
         },
       );
 
-  Widget _buildCartBar(double total) => Container(
+  Widget _buildCartBar(LocalizedStrings strings, double total) => Container(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         decoration: const BoxDecoration(
           color: Colors.white,
@@ -166,8 +173,8 @@ class _OrderScreenState extends State<OrderScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('${_cart.length} items', style: const TextStyle(color: AppColors.textSecondary)),
-                Text('${AppStrings.totalAmount}: ₹${total.toStringAsFixed(0)}',
+                Text('${_cart.length} ${strings.itemsCount}', style: const TextStyle(color: AppColors.textSecondary)),
+                Text('${strings.totalAmount}: ₹${total.toStringAsFixed(0)}',
                     style: const TextStyle(fontWeight: FontWeight.bold)),
               ],
             ),
@@ -179,7 +186,7 @@ class _OrderScreenState extends State<OrderScreen> {
                       width: 22, height: 22,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : Text('ऑर्डर करें • ₹${total.toStringAsFixed(0)}'),
+                  : Text('${strings.placeOrderButton} • ₹${total.toStringAsFixed(0)}'),
             ),
           ],
         ),
@@ -195,7 +202,14 @@ class _OrderScreenState extends State<OrderScreen> {
     });
   }
 
-  void _increaseQty(String itemId) => setState(() => _cart[itemId]?.qty++);
+  void _increaseQty(String itemId, int maxQty) {
+    setState(() {
+      final cartItem = _cart[itemId];
+      if (cartItem != null && (maxQty == 0 || cartItem.qty < maxQty)) {
+        cartItem.qty++;
+      }
+    });
+  }
 
   void _decreaseQty(String itemId) {
     setState(() {
@@ -220,15 +234,16 @@ class _OrderScreenState extends State<OrderScreen> {
         items: _cart.values.map((i) => i.toJson()).toList(),
       );
       if (mounted) {
+        final strings = AppStrings.forLanguage(context.read<StorageService>().language);
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (_) => _OrderSuccessDialog(order: order),
+          builder: (_) => _OrderSuccessDialog(strings: strings, order: order),
         );
       }
     } catch (_) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text(AppStrings.networkError)),
+        SnackBar(content: Text(AppStrings.forLanguage(context.read<StorageService>().language).networkError)),
       );
     } finally {
       setState(() => _isOrdering = false);
@@ -237,9 +252,10 @@ class _OrderScreenState extends State<OrderScreen> {
 }
 
 class _ErrorState extends StatelessWidget {
+  final LocalizedStrings strings;
   final String message;
   final VoidCallback onRetry;
-  const _ErrorState({required this.message, required this.onRetry});
+  const _ErrorState({required this.strings, required this.message, required this.onRetry});
 
   @override
   Widget build(BuildContext context) => Center(
@@ -250,15 +266,16 @@ class _ErrorState extends StatelessWidget {
             const SizedBox(height: 12),
             Text(message, style: const TextStyle(fontSize: 16)),
             const SizedBox(height: 16),
-            ElevatedButton(onPressed: onRetry, child: const Text('दोबारा कोशिश करें')),
+            ElevatedButton(onPressed: onRetry, child: Text(strings.retryButton)),
           ],
         ),
       );
 }
 
 class _OrderSuccessDialog extends StatelessWidget {
+  final LocalizedStrings strings;
   final OrderModel order;
-  const _OrderSuccessDialog({required this.order});
+  const _OrderSuccessDialog({required this.strings, required this.order});
 
   @override
   Widget build(BuildContext context) => AlertDialog(
@@ -268,13 +285,13 @@ class _OrderSuccessDialog extends StatelessWidget {
           children: [
             const Icon(Icons.check_circle, color: AppColors.success, size: 64),
             const SizedBox(height: 12),
-            const Text(AppStrings.orderPlaced,
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+            Text(strings.orderPlaced,
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            Text('Order ID: #${order.orderId.substring(0, 8)}',
+            Text('Order ID: #${order.orderId.substring(0, AppConstants.orderIdDisplayLength)}',
                 style: const TextStyle(color: AppColors.textSecondary)),
             const SizedBox(height: 4),
-            Text('${AppStrings.totalAmount}: ₹${order.totalAmount.toStringAsFixed(0)}',
+            Text('${strings.totalAmount}: ₹${order.totalAmount.toStringAsFixed(0)}',
                 style: const TextStyle(fontWeight: FontWeight.w600)),
             if (order.message != null) ...[
               const SizedBox(height: 8),
@@ -289,7 +306,7 @@ class _OrderSuccessDialog extends StatelessWidget {
               Navigator.pop(context);
               Navigator.pop(context);
             },
-            child: const Text('घर जाएँ'),
+            child: Text(strings.goHome),
           ),
         ],
       );

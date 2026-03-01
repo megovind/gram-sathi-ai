@@ -37,8 +37,11 @@ GoRouter buildRouter(StorageService storage) => GoRouter(
         };
         final isOnboarding = onboardingPaths.contains(state.matchedLocation);
 
-        // Logged-in users skip onboarding
-        if (loggedIn && isOnboarding) return AppRoutes.home;
+        // Logged-in users skip onboarding unless explicitly changing language
+        if (loggedIn && isOnboarding) {
+          final changingLanguage = state.uri.queryParameters['change'] == '1';
+          if (!changingLanguage) return AppRoutes.home;
+        }
 
         // Unauthenticated users cannot access protected screens
         if (!loggedIn && !isOnboarding) return AppRoutes.languageSelection;

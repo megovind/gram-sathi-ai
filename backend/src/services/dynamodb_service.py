@@ -1,8 +1,36 @@
 import time
 import boto3
 from boto3.dynamodb.conditions import Key
-from typing import Any, Optional
+from botocore.exceptions import ClientError
+from typing import Any, Callable, Optional, TypeVar
 from src.utils.config import config
+from src.utils.logger import logger
+
+_T = TypeVar("_T")
+
+_THROTTLE_CODES = frozenset({
+    "ProvisionedThroughputExceededException",
+    "RequestLimitExceeded",
+    "ThrottlingException",
+})
+_MAX_RETRIES = 3
+_RETRY_BASE_SLEEP = 0.1  # seconds; doubles each attempt (0.1 → 0.2 → 0.4)
+
+
+def _with_retry(fn: Callable[[], _T]) -> _T:
+    """Retry DynamoDB calls on throttling errors with exponential backoff."""
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn()
+        except ClientError as exc:
+            code = exc.response["Error"]["Code"]
+            if code in _THROTTLE_CODES and attempt < _MAX_RETRIES - 1:
+                sleep = _RETRY_BASE_SLEEP * (2 ** attempt)
+                logger.warning("dynamodb_throttled", attempt=attempt + 1, sleep_s=sleep, code=code)
+                time.sleep(sleep)
+                continue
+            raise
+    raise RuntimeError("Unreachable")  # pragma: no cover
 
 
 class DynamoDBService:
@@ -15,10 +43,10 @@ class DynamoDBService:
     # --- Generic CRUD ---
 
     def put_item(self, table_name: str, item: dict) -> None:
-        self._table(table_name).put_item(Item=item)
+        _with_retry(lambda: self._table(table_name).put_item(Item=item))
 
     def get_item(self, table_name: str, key: dict) -> Optional[dict]:
-        response = self._table(table_name).get_item(Key=key)
+        response = _with_retry(lambda: self._table(table_name).get_item(Key=key))
         return response.get("Item")
 
     def update_item(
@@ -37,11 +65,11 @@ class DynamoDBService:
         }
         if expression_names:
             kwargs["ExpressionAttributeNames"] = expression_names
-        response = self._table(table_name).update_item(**kwargs)
+        response = _with_retry(lambda: self._table(table_name).update_item(**kwargs))
         return response.get("Attributes", {})
 
     def delete_item(self, table_name: str, key: dict) -> None:
-        self._table(table_name).delete_item(Key=key)
+        _with_retry(lambda: self._table(table_name).delete_item(Key=key))
 
     def query_by_index(
         self,
@@ -50,11 +78,25 @@ class DynamoDBService:
         key_name: str,
         key_value: str,
     ) -> list[dict]:
-        response = self._table(table_name).query(
-            IndexName=index_name,
-            KeyConditionExpression=Key(key_name).eq(key_value),
-        )
-        return response.get("Items", [])
+        """
+        Query a GSI and automatically paginate through all result pages.
+        DynamoDB returns at most 1 MB per call; without pagination, items beyond
+        that limit are silently dropped.
+        """
+        table = self._table(table_name)
+        query_kwargs: dict[str, Any] = {
+            "IndexName": index_name,
+            "KeyConditionExpression": Key(key_name).eq(key_value),
+        }
+        items: list[dict] = []
+        while True:
+            response = _with_retry(lambda: table.query(**query_kwargs))
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            query_kwargs["ExclusiveStartKey"] = last_key
+        return items
 
     # --- Domain helpers ---
 
@@ -120,6 +162,19 @@ class DynamoDBService:
         self.put_item(
             config.RESPONSE_CACHE_TABLE,
             {"cacheKey": cache_key, "response": response, "language": language, "ttl": ttl},
+        )
+
+    # --- Geo cache (Nominatim city → lat/lon, permanent) ---
+
+    def get_geo_cache(self, location_key: str) -> Optional[dict]:
+        """Return cached {lat, lon} for a location key, or None."""
+        return self.get_item(config.GEO_CACHE_TABLE, {"locationKey": location_key})
+
+    def set_geo_cache(self, location_key: str, lat: float, lon: float) -> None:
+        """Permanently cache lat/lon for a location (no TTL — coordinates are stable)."""
+        self.put_item(
+            config.GEO_CACHE_TABLE,
+            {"locationKey": location_key, "lat": str(lat), "lon": str(lon)},
         )
 
 

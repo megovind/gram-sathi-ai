@@ -1,13 +1,16 @@
 import 'dart:io';
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_colors.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/app_strings.dart';
-import '../../../core/router/app_router.dart';
 import '../../../data/models/message_model.dart';
 import '../../../data/services/api_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../data/services/audio_service.dart';
 import '../../../data/services/storage_service.dart';
 import '../../widgets/message_bubble.dart';
@@ -32,6 +35,7 @@ class _HealthScreenState extends State<HealthScreen> {
   bool _isLoading = false;
   bool _isRecording = false;
   bool _isEmergency = false;
+  int _autoPlayAudioIndex = -1;
 
   @override
   void initState() {
@@ -49,17 +53,10 @@ class _HealthScreenState extends State<HealthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final storage = context.watch<StorageService>();
+    final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(AppStrings.healthTitle),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.local_hospital_outlined),
-            tooltip: 'Nearby Clinics',
-            onPressed: () => context.push(AppRoutes.nearby),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(strings.healthTitle)),
       body: Column(
         children: [
           // Emergency banner
@@ -69,13 +66,13 @@ class _HealthScreenState extends State<HealthScreen> {
               color: AppColors.emergency,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               child: Row(
-                children: const [
-                  Icon(Icons.warning_amber_rounded, color: Colors.white),
-                  SizedBox(width: 8),
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.white),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      AppStrings.emergencyBanner,
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      strings.emergencyBanner,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                     ),
                   ),
                 ],
@@ -85,21 +82,41 @@ class _HealthScreenState extends State<HealthScreen> {
           // Messages
           Expanded(
             child: _messages.isEmpty
-                ? _EmptyState(onSuggestionTap: _sendText)
+                ? _EmptyState(strings: strings, onSuggestionTap: _sendText)
                 : ListView.builder(
                     controller: _scrollController,
                     padding: const EdgeInsets.all(16),
                     itemCount: _messages.length + (_isLoading ? 1 : 0),
                     itemBuilder: (context, i) {
                       if (i == _messages.length) {
-                        return const _TypingIndicator();
+                        return _TypingIndicator(strings: strings);
                       }
                       final msg = _messages[i];
+                      final shouldAutoPlay = msg.audioUrl != null && i == _autoPlayAudioIndex;
+
+                      Widget? audioWidget;
+                      if (msg.audioUrl != null) {
+                        audioWidget = AudioPlayerWidget(
+                          url: msg.audioUrl!,
+                          autoPlay: shouldAutoPlay,
+                          onAutoPlayStarted: shouldAutoPlay
+                              ? () => setState(() => _autoPlayAudioIndex = -1)
+                              : null,
+                          playLabel: strings.playAudio,
+                          pauseLabel: strings.pauseAudio,
+                        );
+                      } else if (msg.isVoiceMessage && msg.localFilePath != null && !msg.isUploading) {
+                        audioWidget = AudioPlayerWidget(
+                          url: Uri.file(msg.localFilePath!).toString(),
+                          playLabel: strings.playAudio,
+                          pauseLabel: strings.pauseAudio,
+                          tintColor: Colors.white,
+                        );
+                      }
+
                       return MessageBubble(
                         message: msg,
-                        audioWidget: msg.audioUrl != null
-                            ? AudioPlayerWidget(url: msg.audioUrl!)
-                            : null,
+                        audioWidget: audioWidget,
                       );
                     },
                   ),
@@ -112,12 +129,13 @@ class _HealthScreenState extends State<HealthScreen> {
               child: OutlinedButton.icon(
                 onPressed: _getDoctorSummary,
                 icon: const Icon(Icons.summarize_outlined),
-                label: const Text(AppStrings.getDoctorSummary),
+                label: Text(strings.getDoctorSummary),
               ),
             ),
 
           // Input bar
           _InputBar(
+            strings: strings,
             controller: _textController,
             isRecording: _isRecording,
             isLoading: _isLoading,
@@ -138,13 +156,44 @@ class _HealthScreenState extends State<HealthScreen> {
   }
 
   Future<void> _startRecording() async {
-    final granted = await _audioService.requestMicPermission();
-    if (!granted) {
-      _showSnack(AppStrings.micPermissionDenied);
+    final result = await _audioService.requestMicPermission();
+    if (result == MicPermissionResult.granted) {
+      await _audioService.startRecording();
+      setState(() => _isRecording = true);
       return;
     }
-    await _audioService.startRecording();
-    setState(() => _isRecording = true);
+    if (!mounted) return;
+    if (result == MicPermissionResult.permanentlyDenied) {
+      _showMicSettingsDialog();
+    } else {
+      _showSnack(AppStrings.forLanguage(context.read<StorageService>().language).micPermissionDenied);
+    }
+  }
+
+  void _showMicSettingsDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Microphone Access Required'),
+        content: const Text(
+          'GramSathi needs microphone access to record your voice.\n\n'
+          'Please go to Settings → GramSathi → Microphone and enable it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _stopRecordingAndSend() async {
@@ -152,37 +201,92 @@ class _HealthScreenState extends State<HealthScreen> {
     final file = await _audioService.stopRecording();
     if (file == null) return;
 
-    setState(() => _isLoading = true);
+    // Show user voice bubble + typing indicator immediately
+    final voiceIndex = _messages.length;
+    setState(() {
+      _messages.add(MessageModel.voiceUser(filePath: file.path));
+      _isLoading = true;
+    });
+    _scrollToBottom();
 
     try {
-      // Get presigned S3 upload URL
       final uploadData = await _apiService.getAudioUploadUrl(
         fileName: file.path.split('/').last,
-        contentType: 'audio/m4a',
+        contentType: AppConstants.defaultAudioContentType,
       );
       final uploadUrl = uploadData['uploadUrl'] as String;
       final s3Key = uploadData['s3Key'] as String;
 
-      // Upload audio directly to S3
       await _apiService.uploadAudioToS3(uploadUrl, await file.readAsBytes());
 
-      // Call API with S3 key
-      await _callApi(audioS3Key: s3Key);
+      final result = await _callApi(audioS3Key: s3Key);
+
+      // Replace voice bubble with transcribed text returned by the server
+      final userText = result?['userText'] as String?;
+      if (voiceIndex < _messages.length) {
+        setState(() {
+          _messages[voiceIndex] = _messages[voiceIndex].copyWith(
+            content: userText ?? '',
+            isVoiceMessage: userText == null || userText.isEmpty,
+            isUploading: false,
+          );
+        });
+      }
     } catch (e) {
-      setState(() => _isLoading = false);
-      _showSnack(AppStrings.networkError);
+      if (kDebugMode) print('[Audio Error] $e');
+      final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+      final errMsg = _extractErrorMessage(e, strings);
+      setState(() {
+        _isLoading = false;
+        _messages.add(MessageModel.assistant('${strings.aiErrorPrefix}$errMsg'));
+      });
+      _scrollToBottom();
     }
   }
 
-  Future<void> _callApi({String? text, String? audioS3Key}) async {
+  /// Silently attempt to get the device GPS position.
+  /// Returns null if permission denied or location unavailable.
+  Future<Position?> _getGpsPosition() async {
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return null;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        return null;
+      }
+
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 5),
+        ),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _callApi({String? text, String? audioS3Key}) async {
     final storage = context.read<StorageService>();
     setState(() => _isLoading = true);
 
+    // Fetch GPS silently — backend uses it for nearby clinic/pharmacy searches
+    final position = await _getGpsPosition();
+
     try {
       final result = await _apiService.queryHealth(
-        text: text ?? '',
+        text: text,
+        audioS3Key: audioS3Key,
         language: storage.language,
         conversationId: _conversationId,
+        pincode: storage.lastSearchedPincode,
+        latitude: position?.latitude,
+        longitude: position?.longitude,
       );
 
       _conversationId = result['conversationId'] as String?;
@@ -194,42 +298,68 @@ class _HealthScreenState extends State<HealthScreen> {
         _messages.add(MessageModel.assistant(reply, audioUrl: audioUrl));
         _isEmergency = isEmergency;
         _isLoading = false;
+        _autoPlayAudioIndex = audioUrl != null ? _messages.length - 1 : -1;
       });
       _scrollToBottom();
-    } catch (_) {
-      setState(() => _isLoading = false);
-      _showSnack(AppStrings.networkError);
+      return result;
+    } catch (e) {
+      final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+      final errMsg = _extractErrorMessage(e, strings);
+      setState(() {
+        _isLoading = false;
+        _messages.add(MessageModel.assistant('${strings.aiErrorPrefix}$errMsg'));
+      });
+      _scrollToBottom();
+      return null;
     }
+  }
+
+  String _extractErrorMessage(Object e, LocalizedStrings strings) {
+    if (e is DioException && e.response?.data != null) {
+      final data = e.response!.data;
+      if (data is Map && data['error'] != null) {
+        return data['error'] as String;
+      }
+      if (data is String && data.isNotEmpty) return data;
+    }
+    return strings.networkError;
   }
 
   Future<void> _getDoctorSummary() async {
     final storage = context.read<StorageService>();
     setState(() => _isLoading = true);
+    // Re-use the most recent user message so the backend has text to validate,
+    // but only the generateSummary flag actually affects the response.
+    final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+    final lastUserText = _messages
+        .lastWhere((m) => m.isUser, orElse: () => MessageModel.user(strings.fallbackSymptomText))
+        .content;
     try {
       final result = await _apiService.queryHealth(
-        text: 'generate summary',
+        text: lastUserText,
         language: storage.language,
         conversationId: _conversationId,
         generateSummary: true,
-      );
+        pincode: storage.lastSearchedPincode,
+      ); // No GPS needed for doctor summary
       final summary = result['doctorSummary'] as String? ?? '';
       if (mounted) {
         showDialog(
           context: context,
           builder: (_) => AlertDialog(
-            title: const Text('Doctor Summary'),
+            title: Text(strings.doctorSummaryTitle),
             content: SingleChildScrollView(child: Text(summary)),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
+                child: Text(strings.closeButton),
               ),
             ],
           ),
         );
       }
-    } catch (_) {
-      _showSnack(AppStrings.genericError);
+    } catch (e) {
+      _showSnack(_extractErrorMessage(e, AppStrings.forLanguage(context.read<StorageService>().language)));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -258,15 +388,9 @@ class _HealthScreenState extends State<HealthScreen> {
 }
 
 class _EmptyState extends StatelessWidget {
+  final LocalizedStrings strings;
   final void Function(String) onSuggestionTap;
-  const _EmptyState({required this.onSuggestionTap});
-
-  static const suggestions = [
-    'मुझे बुखार है',
-    'सिरदर्द हो रहा है',
-    'पेट में दर्द है',
-    'खाँसी और जुकाम है',
-  ];
+  const _EmptyState({required this.strings, required this.onSuggestionTap});
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -278,22 +402,22 @@ class _EmptyState extends StatelessWidget {
                 size: 64, color: AppColors.primary),
             const SizedBox(height: 16),
             Text(
-              'अपने लक्षण बताएँ',
+              strings.describeSymptoms,
               style: Theme.of(context).textTheme.titleLarge,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Describe your symptoms below or tap a suggestion',
+            Text(
+              strings.describeSymptomsSubtitle,
               textAlign: TextAlign.center,
-              style: TextStyle(color: AppColors.textSecondary),
+              style: const TextStyle(color: AppColors.textSecondary),
             ),
             const SizedBox(height: 24),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               alignment: WrapAlignment.center,
-              children: suggestions
+              children: strings.healthSuggestions
                   .map((s) => ActionChip(
                         label: Text(s),
                         onPressed: () => onSuggestionTap(s),
@@ -306,7 +430,8 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _TypingIndicator extends StatelessWidget {
-  const _TypingIndicator();
+  final LocalizedStrings strings;
+  const _TypingIndicator({required this.strings});
 
   @override
   Widget build(BuildContext context) => Align(
@@ -318,15 +443,15 @@ class _TypingIndicator extends StatelessWidget {
             color: AppColors.assistantBubble,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
+              const SizedBox(
                 width: 40,
                 child: LinearProgressIndicator(minHeight: 2),
               ),
-              SizedBox(width: 8),
-              Text('सोच रहा हूँ...', style: TextStyle(color: AppColors.textSecondary)),
+              const SizedBox(width: 8),
+              Text(strings.thinkingIndicator, style: const TextStyle(color: AppColors.textSecondary)),
             ],
           ),
         ),
@@ -334,6 +459,7 @@ class _TypingIndicator extends StatelessWidget {
 }
 
 class _InputBar extends StatelessWidget {
+  final LocalizedStrings strings;
   final TextEditingController controller;
   final bool isRecording;
   final bool isLoading;
@@ -342,6 +468,7 @@ class _InputBar extends StatelessWidget {
   final VoidCallback onVoiceStop;
 
   const _InputBar({
+    required this.strings,
     required this.controller,
     required this.isRecording,
     required this.isLoading,
@@ -368,12 +495,12 @@ class _InputBar extends StatelessWidget {
             Expanded(
               child: TextField(
                 controller: controller,
-                decoration: const InputDecoration(
-                  hintText: AppStrings.typeMessage,
+                decoration: InputDecoration(
+                  hintText: strings.typeMessage,
                 ),
                 onSubmitted: (_) => onSend(),
                 maxLines: null,
-                maxLength: 1000,
+                maxLength: AppConstants.maxTextInputLength,
                 buildCounter: (_, {required currentLength, required isFocused, maxLength}) => null,
               ),
             ),

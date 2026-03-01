@@ -1,5 +1,7 @@
 import boto3
+import json
 import time
+import urllib.request
 import uuid
 from src.utils.config import config
 
@@ -42,28 +44,32 @@ class TranscribeService:
 
         return self._poll_job(job_name)
 
+    # Progressive poll intervals (seconds): fast start for short clips, patient for long ones.
+    # Total coverage: 2+2+3+3+5+5+5+10+10+10 = 55 s — well within max_wait_seconds=60.
+    _POLL_INTERVALS = (2, 2, 3, 3, 5, 5, 5, 10, 10, 10)
+
     def _poll_job(self, job_name: str, max_wait_seconds: int = 60) -> str:
         waited = 0
-        interval = 3
-        while waited < max_wait_seconds:
+        for interval in self._POLL_INTERVALS:
+            time.sleep(interval)
+            waited += interval
+
             response = self._client.get_transcription_job(TranscriptionJobName=job_name)
             status = response["TranscriptionJob"]["TranscriptionJobStatus"]
 
             if status == "COMPLETED":
-                import urllib.request
                 transcript_uri = response["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
                 with urllib.request.urlopen(transcript_uri) as f:
-                    import json
                     data = json.load(f)
-                    return data["results"]["transcripts"][0]["transcript"]
+                return data["results"]["transcripts"][0]["transcript"]
 
             if status == "FAILED":
                 raise RuntimeError(
                     f"Transcription failed: {response['TranscriptionJob'].get('FailureReason', 'unknown')}"
                 )
 
-            time.sleep(interval)
-            waited += interval
+            if waited >= max_wait_seconds:
+                break
 
         raise TimeoutError(f"Transcription job {job_name} did not complete in {max_wait_seconds}s")
 

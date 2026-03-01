@@ -67,6 +67,12 @@ cp .env.example .env
 
 ### Run locally
 
+Local development uses **MongoDB** instead of DynamoDB (no AWS needed for data):
+
+1. Install and run MongoDB locally (e.g. `brew install mongodb-community` then `brew services start mongodb-community`), or use Docker: `docker run -d -p 27017:27017 mongo`
+2. Add `MONGODB_URI=mongodb://localhost:27017` to `.env` (optional, this is the default)
+3. Start the backend:
+
 ```bash
 # Starts all Lambda functions on http://localhost:3000
 npm run dev

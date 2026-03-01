@@ -8,15 +8,23 @@ import hashlib
 import hmac
 import json
 import urllib.request
-
-from src.services.bedrock_service import bedrock
-from src.services.dynamodb_service import dynamo
-from src.utils.config import config
-from src.utils.logger import logger
-from src.utils.response import ok, error, parse_body
-from src.models.conversation import Conversation, Message, MessageRole
 import uuid
 from datetime import datetime, timezone
+
+from src.models.conversation import Conversation, Message, MessageRole
+from src.services.bedrock_service import bedrock
+from src.services.database import db
+from src.utils.config import config
+from src.utils.constants import (
+    DEFAULT_LANGUAGE,
+    ERR_VERIFICATION_FAILED,
+    MSG_UNSUPPORTED_MESSAGE_TYPE,
+    MSG_VOICE_NOT_SUPPORTED,
+    USER_ID_WHATSAPP_PREFIX,
+    WHATSAPP_MAX_CHARS,
+)
+from src.utils.logger import logger
+from src.utils.response import ok, error, parse_body
 
 
 def verify(event: dict, context) -> dict:
@@ -28,7 +36,7 @@ def verify(event: dict, context) -> dict:
 
     if mode == "subscribe" and token == config.WHATSAPP_VERIFY_TOKEN:
         return {"statusCode": 200, "body": challenge}
-    return error("Verification failed", 403)
+    return error(ERR_VERIFICATION_FAILED, 403)
 
 
 def incoming(event: dict, context) -> dict:
@@ -60,9 +68,9 @@ def incoming(event: dict, context) -> dict:
         if msg_type == "text":
             user_text = msg.get("text", {}).get("body", "")
         elif msg_type == "audio":
-            user_text = "[Voice message received — please type your query for now]"
+            user_text = MSG_VOICE_NOT_SUPPORTED
         else:
-            user_text = "[Unsupported message type]"
+            user_text = MSG_UNSUPPORTED_MESSAGE_TYPE
 
         if not user_text or not from_number:
             return ok("ok")
@@ -70,18 +78,18 @@ def incoming(event: dict, context) -> dict:
         # Enforce input length limit even on WhatsApp channel
         user_text = user_text[: config.MAX_TEXT_LENGTH]
 
-        user_id = f"wa-{from_number}"
+        user_id = f"{USER_ID_WHATSAPP_PREFIX}{from_number}"
         logger.info("whatsapp_message", user_id=user_id, msg_type=msg_type)
 
-        conversations = dynamo.get_conversations_by_user(user_id)
+        conversations = db.get_conversations_by_user(user_id)
         if conversations:
-            latest = sorted(conversations, key=lambda c: c.get("updatedAt", ""), reverse=True)[0]
+            latest = max(conversations, key=lambda c: c.get("updatedAt", ""))
             conversation = Conversation.from_dynamo(latest)
         else:
             conversation = Conversation(
                 conversationId=str(uuid.uuid4()),
                 userId=user_id,
-                language="hi",
+                language=DEFAULT_LANGUAGE,
             )
 
         history = [{"role": m.role.value, "content": m.content} for m in conversation.messages]
@@ -93,9 +101,9 @@ def incoming(event: dict, context) -> dict:
             Message(role=MessageRole.ASSISTANT, content=ai_reply, timestamp=now),
         ])
         conversation.updatedAt = now
-        dynamo.save_conversation(conversation.to_dynamo())
+        db.save_conversation(conversation.to_dynamo())
 
-        _send_whatsapp_message(from_number, ai_reply)
+        _send_whatsapp_message(from_number, ai_reply[:WHATSAPP_MAX_CHARS])
 
     except Exception as exc:
         # Log but always return 200 so WhatsApp doesn't retry aggressively

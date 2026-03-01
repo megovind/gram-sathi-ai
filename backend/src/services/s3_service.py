@@ -8,6 +8,7 @@ class S3Service:
         self._client = boto3.client(
             "s3",
             region_name=config.AWS_REGION,
+            endpoint_url=f"https://s3.{config.AWS_REGION}.amazonaws.com",
             config=BotoConfig(signature_version="s3v4"),
         )
 
