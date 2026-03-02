@@ -11,6 +11,88 @@ import '../../widgets/app_icon_widget.dart';
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  void _showSettingsSheet(BuildContext context, StorageService storage) {
+    final strings = AppStrings.forLanguage(storage.language);
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.textSecondary.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.language, color: AppColors.primary),
+                ),
+                title: Text(strings.changeLanguage,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  context.push('${AppRoutes.languageSelection}?change=1');
+                },
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.logout, color: Colors.red),
+                ),
+                title: Text(strings.logoutButton,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, color: Colors.red)),
+                onTap: () {
+                  Navigator.pop(sheetCtx);
+                  showDialog<void>(
+                    context: context,
+                    builder: (dialogCtx) => AlertDialog(
+                      title: Text(strings.logoutConfirmTitle),
+                      content: Text(strings.logoutConfirmMessage),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(dialogCtx),
+                          child: Text(strings.cancelButton),
+                        ),
+                        TextButton(
+                          onPressed: () async {
+                            Navigator.pop(dialogCtx);
+                            await storage.clear();
+                          },
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: Text(strings.logoutButton),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final storage = context.watch<StorageService>();
@@ -53,7 +135,7 @@ class HomeScreen extends StatelessWidget {
                   IconButton(
                     icon: const Icon(Icons.settings_outlined, color: AppColors.textSecondary),
                     tooltip: strings.settingsTooltip,
-                    onPressed: () => context.push('${AppRoutes.languageSelection}?change=1'),
+                    onPressed: () => _showSettingsSheet(context, storage),
                   ),
                 ],
               ),

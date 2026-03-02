@@ -156,6 +156,15 @@ functions:
           method: get
           cors: true
 
+  # Legal / public pages (privacy policy)
+  legal:
+    handler: src/handlers/legal.handler
+    events:
+      - http:
+          path: /legal/privacy-policy
+          method: get
+          cors: true
+
   # Shop owner management (US-13 → US-16)
   shopOwner:
     handler: src/handlers/shop_owner.handler

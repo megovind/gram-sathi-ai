@@ -28,6 +28,7 @@ class AppRoutes {
 
 GoRouter buildRouter(StorageService storage) => GoRouter(
       initialLocation: AppRoutes.languageSelection,
+      refreshListenable: storage,
       redirect: (context, state) {
         final loggedIn = storage.isLoggedIn;
         final onboardingPaths = {

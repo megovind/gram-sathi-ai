@@ -128,5 +128,6 @@ class StorageService extends ChangeNotifier {
     _cachedLanguage = null;
     await _secure.deleteAll();
     await _prefs.clear();
+    notifyListeners();
   }
 }

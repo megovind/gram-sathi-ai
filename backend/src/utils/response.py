@@ -29,6 +29,18 @@ def error(message: str, status_code: int = 400, details: Optional[Any] = None) -
     }
 
 
+def html(body: str, status_code: int = 200) -> dict:
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=86400",
+        },
+        "body": body,
+    }
+
+
 def parse_body(event: dict) -> dict:
     """Safely parse JSON body from Lambda event."""
     try:

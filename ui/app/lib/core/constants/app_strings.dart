@@ -74,6 +74,11 @@ class AppStrings {
   // Home
   static const settingsTooltip = 'Settings';
   static const settingsComingSoon = 'Settings — coming soon';
+  static const changeLanguage = 'Change Language';
+  static const logoutButton = 'Sign Out';
+  static const logoutConfirmTitle = 'Sign Out?';
+  static const logoutConfirmMessage = 'Are you sure you want to sign out?';
+  static const cancelButton = 'Cancel';
   static const voiceAsk = 'आवाज़ से पूछें';
   static const voiceAskSubtitle = 'Tap to ask by voice';
   static const quickServices = 'त्वरित सेवाएँ';
@@ -265,6 +270,11 @@ class AppStrings {
     itemsAvailable: 'आइटम उपलब्ध',
     itemsCount: 'आइटम',
     saveButton: 'सेव करें',
+    changeLanguage: 'भाषा बदलें',
+    logoutButton: 'साइन आउट',
+    logoutConfirmTitle: 'साइन आउट करें?',
+    logoutConfirmMessage: 'क्या आप वाकई साइन आउट करना चाहते हैं?',
+    cancelButton: 'रद्द करें',
   );
 
   static final _localizedEn = LocalizedStrings(
@@ -367,6 +377,11 @@ class AppStrings {
     itemsAvailable: 'items available',
     itemsCount: 'items',
     saveButton: 'Save',
+    changeLanguage: 'Change Language',
+    logoutButton: 'Sign Out',
+    logoutConfirmTitle: 'Sign Out?',
+    logoutConfirmMessage: 'Are you sure you want to sign out?',
+    cancelButton: 'Cancel',
   );
 }
 
@@ -472,6 +487,11 @@ class LocalizedStrings {
     required this.itemsAvailable,
     required this.itemsCount,
     required this.saveButton,
+    required this.changeLanguage,
+    required this.logoutButton,
+    required this.logoutConfirmTitle,
+    required this.logoutConfirmMessage,
+    required this.cancelButton,
   });
   final String appName;
   final String tagline;
@@ -572,4 +592,9 @@ class LocalizedStrings {
   final String itemsAvailable;
   final String itemsCount;
   final String saveButton;
+  final String changeLanguage;
+  final String logoutButton;
+  final String logoutConfirmTitle;
+  final String logoutConfirmMessage;
+  final String cancelButton;
 }
