@@ -241,9 +241,11 @@ class _OrderScreenState extends State<OrderScreen> {
           builder: (_) => _OrderSuccessDialog(strings: strings, order: order),
         );
       }
-    } catch (_) {
+    } catch (e) {
+      final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+      final msg = ApiService.extractErrorMessage(e, strings.networkError);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppStrings.forLanguage(context.read<StorageService>().language).networkError)),
+        SnackBar(content: Text(msg)),
       );
     } finally {
       setState(() => _isOrdering = false);

@@ -14,10 +14,6 @@
     <!-- Needed by record package -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
 
-    <!-- Foreground service for background recording (optional) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
-
     <application
         android:label="GramSathi"
         android:name="${applicationName}"

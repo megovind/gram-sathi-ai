@@ -199,9 +199,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
         );
         setState(() => _newItems.clear());
       }
-    } catch (_) {
+    } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppStrings.forLanguage(context.read<StorageService>().language).networkError)),
+        SnackBar(
+          content: Text(
+            ApiService.extractErrorMessage(
+              e,
+              AppStrings.forLanguage(context.read<StorageService>().language).networkError,
+            ),
+          ),
+        ),
       );
     } finally {
       setState(() => _isSaving = false);

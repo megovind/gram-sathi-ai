@@ -7,7 +7,6 @@ import '../../presentation/screens/onboarding/phone_input_screen.dart';
 import '../../presentation/screens/onboarding/welcome_screen.dart';
 import '../../presentation/screens/home/home_screen.dart';
 import '../../presentation/screens/health/health_screen.dart';
-import '../../presentation/screens/health/nearby_screen.dart';
 import '../../presentation/screens/commerce/shops_screen.dart';
 import '../../presentation/screens/commerce/order_screen.dart';
 import '../../presentation/screens/shop_owner/shop_dashboard_screen.dart';
@@ -19,7 +18,6 @@ class AppRoutes {
   static const welcome = '/welcome';
   static const home = '/home';
   static const health = '/health';
-  static const nearby = '/health/nearby';
   static const shops = '/commerce/shops';
   static const order = '/commerce/order';
   static const shopDashboard = '/shop/dashboard';
@@ -69,10 +67,6 @@ GoRouter buildRouter(StorageService storage) => GoRouter(
         GoRoute(
           path: AppRoutes.health,
           builder: (_, __) => const HealthScreen(),
-        ),
-        GoRoute(
-          path: AppRoutes.nearby,
-          builder: (_, __) => const NearbyScreen(),
         ),
         GoRoute(
           path: AppRoutes.shops,

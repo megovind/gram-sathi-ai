@@ -29,7 +29,7 @@ class Config:
     BEDROCK_MAX_TOKENS: int = int(os.environ.get("BEDROCK_MAX_TOKENS", "512"))
     BEDROCK_HISTORY_TURNS: int = 4
     RESPONSE_CACHE_TTL_SECONDS: int = 86400
-    OVERPASS_RADIUS_METERS: int = int(os.environ.get("OVERPASS_RADIUS_METERS", "5000"))
+    GOOGLE_PLACES_API_KEY: str = os.environ.get("GOOGLE_PLACES_API_KEY", "")
 
     # Input validation limits — prevents token abuse and DynamoDB oversized items
     MAX_TEXT_LENGTH: int = 1000       # characters per user message

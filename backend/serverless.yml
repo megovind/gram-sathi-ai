@@ -27,6 +27,7 @@ provider:
     WHATSAPP_PHONE_NUMBER_ID: ${env:WHATSAPP_PHONE_NUMBER_ID, ''}
     WHATSAPP_APP_SECRET: ${env:WHATSAPP_APP_SECRET, ''}
     MONGODB_URI: ${env:MONGODB_URI, 'mongodb://localhost:27017'}
+    GOOGLE_PLACES_API_KEY: ${env:GOOGLE_PLACES_API_KEY, ''}
   iam:
     role:
       statements:
@@ -127,7 +128,7 @@ functions:
   # Healthcare flow (US-05 → US-09)
   health:
     handler: src/handlers/health.handler
-    timeout: 29
+    timeout: 60
     events:
       - http:
           path: /health/query
@@ -325,7 +326,22 @@ plugins:
 custom:
   serverless-offline:
     noPrependStageInUrl: true
+    httpPort: 4000
+    lambdaPort: 4002
+    requestTimeout: 65000
   pythonRequirements:
     dockerizePip: false
     slim: true
-    strip: false
+    strip: true
+    useDownloadCache: false
+    useStaticCache: false
+    pipCmdExtraArgs:
+      - --platform
+      - manylinux2014_x86_64
+      - --implementation
+      - cp
+      - --python-version
+      - "3.13"
+      - --only-binary
+      - ":all:"
+      - --no-cache-dir

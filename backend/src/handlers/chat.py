@@ -125,12 +125,14 @@ def get_upload_url(event: dict, context) -> dict:
     file_name: str = body.get("fileName", f"{uuid.uuid4().hex}.m4a")
     content_type: str = body.get("contentType", DEFAULT_AUDIO_CONTENT_TYPE)
 
-    if content_type not in config.ALLOWED_AUDIO_CONTENT_TYPES:
+    # Strip codec parameters (e.g. "audio/webm;codecs=opus" → "audio/webm")
+    base_content_type = content_type.split(";")[0].strip()
+    if base_content_type not in config.ALLOWED_AUDIO_CONTENT_TYPES:
         return error(ERR_UNSUPPORTED_CONTENT_TYPE.format(content_type), 400)
 
     object_key = f"uploads/{user_id}/{uuid.uuid4().hex}-{file_name}"
     try:
-        upload_url = s3.generate_presigned_upload_url(object_key, content_type)
+        upload_url = s3.generate_presigned_upload_url(object_key, base_content_type)
     except Exception as exc:
         return error(f"{ERR_UPLOAD_URL_FAILED}: {str(exc)}", 500)
 

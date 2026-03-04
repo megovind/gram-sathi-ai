@@ -180,29 +180,6 @@ class BedrockService:
         valid = {"health", "retail", "info", "unknown"}
         return intent if intent in valid else "unknown"
 
-    def extract_nearby_location(self, text: str) -> Optional[str]:
-        """
-        Extract a specific city or area name from a nearby-facility query.
-        Returns the city string if the user mentioned one, else None (meaning 'near me').
-        Uses a minimal prompt to keep latency and cost low.
-        Only called when the app has no GPS coordinates to offer.
-        """
-        prompt = (
-            "Extract the location from this query. "
-            'Reply ONLY with valid JSON: {"location": "<city>"} or {"location": null}\n'
-            f"Query: {text}"
-        )
-        try:
-            raw = self.chat(prompt, language="en")
-            match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
-            if not match:
-                return None
-            data = json.loads(match.group())
-            loc = data.get("location")
-            return loc.strip() if isinstance(loc, str) and loc.strip() else None
-        except Exception:
-            return None
-
     def generate_doctor_summary(
         self,
         symptoms: List[str],

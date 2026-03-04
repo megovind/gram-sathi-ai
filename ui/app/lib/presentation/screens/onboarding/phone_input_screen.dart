@@ -178,9 +178,10 @@ class _PhoneInputScreenState extends State<PhoneInputScreen> {
     } catch (e) {
       if (mounted) {
         final strings = AppStrings.forLanguage(context.read<StorageService>().language);
+        final msg = ApiService.extractErrorMessage(e, strings.networkErrorRetry);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(strings.networkErrorRetry),
+            content: Text(msg),
             action: SnackBarAction(
               label: strings.skipButton,
               onPressed: () => context.go(AppRoutes.welcome),

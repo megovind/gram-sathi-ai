@@ -10,6 +10,10 @@ class MessageModel {
   final String? localFilePath;
   // True while audio is being uploaded + transcribed
   final bool isUploading;
+  // Structured nearby results (clinics / pharmacies / shops) returned by backend
+  final List<Map<String, dynamic>> facilities;
+  // 'clinic' | 'pharmacy' | 'hospital' | 'facilities' | 'shops' | ''
+  final String nearbyKind;
 
   const MessageModel({
     required this.role,
@@ -19,6 +23,8 @@ class MessageModel {
     this.isVoiceMessage = false,
     this.localFilePath,
     this.isUploading = false,
+    this.facilities = const [],
+    this.nearbyKind = '',
   });
 
   bool get isUser => role == AppConstants.roleUser;
@@ -45,6 +51,21 @@ class MessageModel {
         timestamp: DateTime.now(),
       );
 
+  factory MessageModel.assistant(
+    String content, {
+    String? audioUrl,
+    List<Map<String, dynamic>>? facilities,
+    String? nearbyKind,
+  }) =>
+      MessageModel(
+        role: AppConstants.roleAssistant,
+        content: content,
+        audioUrl: audioUrl,
+        timestamp: DateTime.now(),
+        facilities: facilities ?? const [],
+        nearbyKind: nearbyKind ?? '',
+      );
+
   MessageModel copyWith({
     String? content,
     bool? isVoiceMessage,
@@ -59,12 +80,7 @@ class MessageModel {
         isVoiceMessage: isVoiceMessage ?? this.isVoiceMessage,
         isUploading: isUploading ?? this.isUploading,
         localFilePath: localFilePath ?? this.localFilePath,
-      );
-
-  factory MessageModel.assistant(String content, {String? audioUrl}) => MessageModel(
-        role: AppConstants.roleAssistant,
-        content: content,
-        audioUrl: audioUrl,
-        timestamp: DateTime.now(),
+        facilities: facilities,
+        nearbyKind: nearbyKind,
       );
 }

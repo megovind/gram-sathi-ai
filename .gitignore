@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # Python
 __pycache__/
@@ -9,7 +10,7 @@ __pycache__/
 venv/
 .venv/
 
-# Flutter
+# Flutter — build artifacts & auto-generated files
 ui/app/.dart_tool/
 ui/app/build/
 ui/app/.packages
@@ -17,9 +18,24 @@ ui/app/.pub-cache/
 ui/app/.flutter-plugins
 ui/app/.flutter-plugins-dependencies
 
+# Android — local machine config & build output (never commit these)
+ui/app/android/local.properties
+ui/app/android/.gradle/
+ui/app/android/build/
+ui/app/android/app/build/
+ui/app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# iOS — auto-generated & CocoaPods artifacts
+ui/app/ios/Pods/
+ui/app/ios/Flutter/Generated.xcconfig
+ui/app/ios/Flutter/flutter_export_environment.sh
+ui/app/ios/.symlinks/
+
 # Serverless
 backend/.serverless/
 backend/node_modules/
+web/node_modules/
+web/.next/
 
 # macOS
 .DS_Store

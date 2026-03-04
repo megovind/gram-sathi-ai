@@ -44,6 +44,13 @@ class HomeScreen extends StatelessWidget {
                 ),
                 title: Text(strings.changeLanguage,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: strings.currentlyLabel.isNotEmpty
+                    ? Text(
+                        '${strings.currentlyLabel} ${storage.language.toUpperCase()}',
+                        style: const TextStyle(
+                            fontSize: 12, color: AppColors.textSecondary),
+                      )
+                    : null,
                 onTap: () {
                   Navigator.pop(sheetCtx);
                   context.push('${AppRoutes.languageSelection}?change=1');
@@ -126,7 +133,11 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        strings.tagline,
+                        storage.phone != null && storage.phone!.isNotEmpty
+                            ? '+91 ${storage.phone}'
+                            : strings.welcomeBack.isNotEmpty
+                                ? strings.welcomeBack
+                                : strings.tagline,
                         style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
@@ -146,6 +157,16 @@ class HomeScreen extends StatelessWidget {
                 strings.howCanIHelp,
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
+              if (strings.howCanIHelpSub.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  strings.howCanIHelpSub,
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
 
               // Main action cards

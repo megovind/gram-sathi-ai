@@ -36,11 +36,90 @@ class _HealthScreenState extends State<HealthScreen> {
   bool _isRecording = false;
   bool _isEmergency = false;
   int _autoPlayAudioIndex = -1;
+  bool _hasGps = false;
+
+  // ── Nearby intent detection ─────────────────────────────────────────────────
+
+  static final _pincodeRe = RegExp(r'\b(\d{6})\b');
+  static final _facilityRe = RegExp(
+    r'nearby|near me|clinic|clinics|pharmacy|pharmacies|hospital|hospitals|'
+    r'नजदीक|मेरे पास|आसपास|क्लीनिक|फार्मेसी|अस्पताल|दवाखाना',
+    caseSensitive: false,
+  );
+  static final _shopRe = RegExp(
+    r'\b(shop|shops|store|stores|दुकान|दुकानें|स्टोर)\b',
+    caseSensitive: false,
+  );
+
+  String _facilityKind(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('clinic') || t.contains('क्लीनिक')) return 'clinic';
+    if (t.contains('pharmacy') || t.contains('फार्मेसी') || t.contains('दवाखाना')) return 'pharmacy';
+    if (t.contains('hospital') || t.contains('अस्पताल')) return 'hospital';
+    return 'facilities';
+  }
+
+  /// Only fetches structured results when the user's message contains an
+  /// explicit 6-digit pincode.  City/location-based queries ("clinics in
+  /// New Delhi") require geocoding that only the backend can do — for those,
+  /// the backend's [facilities] array (returned once deployed) is used instead.
+  Future<({List<Map<String, dynamic>> items, String kind})> _fetchNearbyIfNeeded(
+    String queryText,
+    String? storedPincode,
+  ) async {
+    // Require an explicit pincode in the message — never silently fall back to
+    // the stored pincode, which would return the same area's results for any
+    // city-based query.
+    final pincodeMatch = _pincodeRe.firstMatch(queryText);
+    final pincode = pincodeMatch?.group(1);
+    if (pincode == null) return (items: <Map<String, dynamic>>[], kind: '');
+
+    if (_facilityRe.hasMatch(queryText)) {
+      try {
+        final results = await _apiService.getNearbyFacilities(pincode);
+        return (items: results, kind: _facilityKind(queryText));
+      } catch (_) {}
+    } else if (_shopRe.hasMatch(queryText)) {
+      try {
+        final shops = await _apiService.getNearbyShops(pincode: pincode);
+        final items = shops
+            .map((s) => <String, dynamic>{
+                  'name': s.name,
+                  'address': s.address ?? '',
+                  'phone': s.phone ?? '',
+                  'category': 'shop',
+                })
+            .toList();
+        return (items: items, kind: 'shops');
+      } catch (_) {}
+    }
+    return (items: <Map<String, dynamic>>[], kind: '');
+  }
 
   @override
   void initState() {
     super.initState();
     _apiService = context.read<ApiService>();
+    _checkGpsAvailability();
+  }
+
+  Future<void> _checkGpsAvailability() async {
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+      final permission = await Geolocator.checkPermission();
+      if (permission != LocationPermission.always &&
+          permission != LocationPermission.whileInUse) return;
+      // Confirm a real position fix is obtainable (not just permission granted)
+      final pos = await Geolocator.getLastKnownPosition() ??
+          await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.low,
+              timeLimit: Duration(seconds: 5),
+            ),
+          ).catchError((_) => null);
+      if (mounted) setState(() => _hasGps = pos != null);
+    } catch (_) {}
   }
 
   @override
@@ -56,7 +135,44 @@ class _HealthScreenState extends State<HealthScreen> {
     final storage = context.watch<StorageService>();
     final strings = AppStrings.forLanguage(storage.language);
     return Scaffold(
-      appBar: AppBar(title: Text(strings.healthTitle)),
+      appBar: AppBar(
+        title: Text(strings.healthTitle),
+        actions: [
+          // GPS indicator — same as web's LocateFixed/LocateOff icon
+          Tooltip(
+            message: _hasGps
+                ? 'Location active — nearby searches use GPS'
+                : 'Location off — grant permission for accurate nearby results',
+            child: Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Icon(
+                _hasGps ? Icons.location_on : Icons.location_off,
+                color: _hasGps
+                    ? Colors.white.withOpacity(0.85)
+                    : Colors.white.withOpacity(0.4),
+                size: 20,
+              ),
+            ),
+          ),
+          // Doctor summary button shows in AppBar after enough messages
+          if (_messages.length >= 4)
+            TextButton.icon(
+              onPressed: _getDoctorSummary,
+              icon: const Icon(Icons.summarize_outlined,
+                  color: Colors.white, size: 18),
+              label: Text(
+                strings.summary.isNotEmpty
+                    ? strings.summary
+                    : strings.getDoctorSummary,
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+              ),
+            ),
+        ],
+      ),
       body: Column(
         children: [
           // Emergency banner
@@ -121,17 +237,6 @@ class _HealthScreenState extends State<HealthScreen> {
                     },
                   ),
           ),
-
-          // Doctor summary button (shows after some messages)
-          if (_messages.length >= 4)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: OutlinedButton.icon(
-                onPressed: _getDoctorSummary,
-                icon: const Icon(Icons.summarize_outlined),
-                label: Text(strings.getDoctorSummary),
-              ),
-            ),
 
           // Input bar
           _InputBar(
@@ -260,12 +365,23 @@ class _HealthScreenState extends State<HealthScreen> {
         return null;
       }
 
-      return await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.medium,
-          timeLimit: Duration(seconds: 5),
-        ),
-      );
+      Position? position;
+      try {
+        position = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.medium,
+            timeLimit: Duration(seconds: 8),
+          ),
+        );
+      } catch (_) {
+        // Fresh GPS fix failed (common on emulators) — try last known position
+        position = await Geolocator.getLastKnownPosition();
+      }
+
+      if (position != null && mounted && !_hasGps) {
+        setState(() => _hasGps = true);
+      }
+      return position;
     } catch (_) {
       return null;
     }
@@ -294,8 +410,30 @@ class _HealthScreenState extends State<HealthScreen> {
       final audioUrl = result['audioUrl'] as String?;
       final isEmergency = result['isEmergency'] as bool? ?? false;
 
+      // Try backend-returned structured facilities first (requires backend deploy)
+      var facilities = (result['facilities'] as List?)
+              ?.map((e) => Map<String, dynamic>.from(e as Map))
+              .toList() ??
+          [];
+      var nearbyKind = result['nearbyKind'] as String? ?? '';
+
+      // If backend didn't return structured data, detect intent and fetch directly
+      if (facilities.isEmpty) {
+        final queryText = result['userText'] as String? ?? text ?? '';
+        if (queryText.isNotEmpty) {
+          final nearby = await _fetchNearbyIfNeeded(queryText, storage.lastSearchedPincode);
+          facilities = nearby.items;
+          nearbyKind = nearby.kind;
+        }
+      }
+
       setState(() {
-        _messages.add(MessageModel.assistant(reply, audioUrl: audioUrl));
+        _messages.add(MessageModel.assistant(
+          reply,
+          audioUrl: audioUrl,
+          facilities: facilities,
+          nearbyKind: nearbyKind,
+        ));
         _isEmergency = isEmergency;
         _isLoading = false;
         _autoPlayAudioIndex = audioUrl != null ? _messages.length - 1 : -1;
@@ -315,14 +453,7 @@ class _HealthScreenState extends State<HealthScreen> {
   }
 
   String _extractErrorMessage(Object e, LocalizedStrings strings) {
-    if (e is DioException && e.response?.data != null) {
-      final data = e.response!.data;
-      if (data is Map && data['error'] != null) {
-        return data['error'] as String;
-      }
-      if (data is String && data.isNotEmpty) return data;
-    }
-    return strings.networkError;
+    return ApiService.extractErrorMessage(e, strings.networkError);
   }
 
   Future<void> _getDoctorSummary() async {

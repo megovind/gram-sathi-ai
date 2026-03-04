@@ -2,7 +2,9 @@ boto3==1.37.7
 pymongo==4.10.1
 botocore==1.37.7
 python-dotenv==1.0.1
-pytest==8.3.4
-pytest-mock==3.14.0
-pytest-asyncio==0.25.3
-moto[dynamodb,s3,transcribe,polly,sns]==5.0.27
+
+# LangGraph agent framework
+langgraph>=0.2.0
+
+# Google Places API
+googlemaps>=4.2.0

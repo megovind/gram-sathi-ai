@@ -252,4 +252,38 @@ class ApiService {
     );
     return response.data as Map<String, dynamic>;
   }
+
+  /// Extract a user-visible message from a network/API exception.
+  /// Uses backend body "error" or "message", then Dio message, then type-based text, then fallback.
+  static String extractErrorMessage(Object e, String fallback) {
+    if (e is DioException) {
+      if (kDebugMode) {
+        print('[API Error] type=${e.type} message=${e.message} path=${e.requestOptions.uri} status=${e.response?.statusCode}');
+        if (e.response?.data != null) print('[API Error] body=${e.response!.data}');
+      }
+      final data = e.response?.data;
+      if (data != null) {
+        if (data is Map) {
+          final msg = data['error'] ?? data['message'];
+          if (msg != null && msg.toString().trim().isNotEmpty) return msg.toString().trim();
+        }
+        if (data is String && data.trim().isNotEmpty) return data.trim();
+      }
+      if (e.message != null && e.message!.trim().isNotEmpty) return e.message!.trim();
+      switch (e.type) {
+        case DioExceptionType.connectionTimeout:
+        case DioExceptionType.sendTimeout:
+        case DioExceptionType.receiveTimeout:
+          return 'Connection timed out. Check your internet.';
+        case DioExceptionType.connectionError:
+          return 'Cannot reach server. Check internet or try again.';
+        case DioExceptionType.unknown:
+          if (e.error != null) return e.error.toString();
+          break;
+        default:
+          break;
+      }
+    }
+    return fallback;
+  }
 }
