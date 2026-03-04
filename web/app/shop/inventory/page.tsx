@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Plus, Trash2, Loader2 } from 'lucide-react'
 import { updateInventory } from '@/lib/api'
@@ -14,6 +14,14 @@ interface StagedItem {
 const EMPTY: StagedItem = { name: '', nameHindi: '', price: '', unit: 'piece', stockQty: '' }
 
 export default function InventoryPage() {
+  return (
+    <Suspense>
+      <InventoryPageInner />
+    </Suspense>
+  )
+}
+
+function InventoryPageInner() {
   const router  = useRouter()
   const params  = useSearchParams()
   const shopId  = params.get('shopId') ?? ''
@@ -120,6 +128,7 @@ export default function InventoryPage() {
     </div>
   )
 }
+
 
 function Field({ label, value, onChange, placeholder, type = 'text' }: {
   label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string

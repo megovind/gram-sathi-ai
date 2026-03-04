@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, Loader2, CheckCircle, ShoppingCart } from 'lucide-react'
 import { getShop, placeOrder, type ShopItem } from '@/lib/api'
@@ -8,6 +8,14 @@ import type { CartItem } from '@/lib/types'
 import { toast } from 'sonner'
 
 export default function OrderPage() {
+  return (
+    <Suspense>
+      <OrderPageInner />
+    </Suspense>
+  )
+}
+
+function OrderPageInner() {
   const router     = useRouter()
   const params     = useSearchParams()
   const shopId     = params.get('shopId') ?? ''
@@ -31,7 +39,7 @@ export default function OrderPage() {
       .finally(() => setLoading(false))
   }, [shopId])
 
-  const setQty = useCallback((item: ShopItem['inventory'][0], qty: number) => {
+  const setQty = useCallback((item: NonNullable<ShopItem['inventory']>[0], qty: number) => {
     setCart(prev => {
       if (qty <= 0) return prev.filter(c => c.itemId !== item.itemId)
       const existing = prev.find(c => c.itemId === item.itemId)
