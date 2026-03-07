@@ -1,6 +1,12 @@
 # GramSathi AI
 
-Voice-first AI assistant for rural India — healthcare guidance + local commerce.
+> Voice-first AI assistant for rural India — healthcare guidance, nearby facility discovery, and local commerce.
+
+---
+
+## Overview
+
+GramSathi bridges the gap between rural citizens and essential services through natural voice/text conversations in regional Indian languages. Users can get symptom-based health guidance, find nearby clinics and pharmacies, and order from local shops — all without needing to read or write in English.
 
 ---
 
@@ -8,12 +14,13 @@ Voice-first AI assistant for rural India — healthcare guidance + local commerc
 
 ```
 gram-sathi-ai/
-├── backend/          # Python AWS Lambda (Serverless Framework)
-├── ui/app/           # Flutter mobile app (Android + iOS)
-├── docs/
-├── design.md
-├── requirements.md
-└── user-stories.md
+├── backend/          # Python · AWS Lambda · Serverless Framework
+├── web/              # Next.js 15 · TypeScript · Tailwind CSS (web client)
+├── ui/app/           # Flutter 3.x (Android + iOS mobile client)
+└── docs/             # Detailed documentation
+    ├── web-ui.md     # Web frontend guide
+    ├── backend.md    # Backend architecture & agent design
+    └── deployment.md # Deployment instructions
 ```
 
 ---
@@ -22,141 +29,115 @@ gram-sathi-ai/
 
 | Layer | Technology |
 |---|---|
-| Frontend | Flutter 3.x |
-| Backend | Python 3.12 · AWS Lambda · Serverless Framework |
-| AI | Amazon Bedrock (Claude 3.5 Sonnet) |
+| Web Frontend | Next.js 15 · TypeScript · Tailwind CSS · Lucide Icons |
+| Mobile Frontend | Flutter 3.x (Dart) |
+| Backend Runtime | Python 3.12 · AWS Lambda · Serverless Framework |
+| AI / LLM | Amazon Bedrock (Claude 3 Haiku) · LangGraph agent |
 | Speech-to-Text | Amazon Transcribe |
 | Text-to-Speech | Amazon Polly |
+| Location Search | Google Places API (New) |
 | Database | Amazon DynamoDB |
-| Storage | Amazon S3 |
+| File Storage | Amazon S3 |
 | Notifications | Amazon SNS |
 | Auth | JWT (HS256) |
 | Monitoring | Amazon CloudWatch |
+| Hosting (Web) | AWS Amplify |
 
 ---
 
-## Backend Setup
+## Key Features
 
-### Prerequisites
+### For Users
+- **Voice or text input** in Hindi, English, Marathi, Tamil, Telugu, Kannada, Bengali, Gujarati
+- **Health guidance** — symptom capture, red-flag detection, non-diagnostic AI response
+- **Nearby facilities** — clinics, pharmacies, hospitals found via GPS or user-specified location
+- **Local commerce** — shop discovery, assisted ordering, order tracking
+- **Audio responses** via Amazon Polly (MP3 default, OGG in low-bandwidth mode)
+- **Conversation memory** — 4-turn context window backed by DynamoDB
 
-- Python 3.12+
-- Node.js 20+ (for Serverless Framework CLI)
-- AWS CLI configured (`aws configure`)
-- Amazon Bedrock: enable **Claude 3.5 Sonnet** model access in `ap-south-1`
+### For Shop Owners
+- Shop registration and profile management
+- Inventory upload
+- Incoming order notifications (SMS via SNS)
+- Daily revenue analytics dashboard
 
-### Install
+---
 
+## Quick Start
+
+### Backend
 ```bash
 cd backend
-
-# Python dependencies
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Serverless Framework + plugins
 npm install
+cp .env.example .env   # fill in AWS keys, JWT_SECRET, Google Places key
+npm run dev            # local serverless-offline
 ```
 
-### Environment
-
+### Web App
 ```bash
-cp .env.example .env
-# Edit .env — fill in AWS credentials, JWT_SECRET, WhatsApp tokens
+cd web
+npm install
+cp .env.local.example .env.local   # fill in API URL, app URL
+npm run dev                         # http://localhost:3000
 ```
 
-### Run locally
-
-Local development uses **MongoDB** instead of DynamoDB (no AWS needed for data):
-
-1. Install and run MongoDB locally (e.g. `brew install mongodb-community` then `brew services start mongodb-community`), or use Docker: `docker run -d -p 27017:27017 mongo`
-2. Add `MONGODB_URI=mongodb://localhost:27017` to `.env` (optional, this is the default)
-3. Start the backend:
-
-```bash
-# Starts all Lambda functions on http://localhost:3000
-npm run dev
-```
-
-### Run tests
-
-```bash
-# Unit + handler tests (no AWS needed — uses moto mocks)
-pytest tests/ -v
-```
-
-### Deploy to AWS
-
-```bash
-npm run deploy:dev     # → dev stage
-npm run deploy:prod    # → prod stage
-```
-
----
-
-## Flutter App Setup
-
-### Prerequisites
-
-- Flutter 3.3+ (`flutter --version`)
-- Android Studio / Xcode
-
-### Install
-
+### Flutter App
 ```bash
 cd ui/app
 flutter pub get
+flutter run --dart-define=API_BASE_URL=https://<your-api>.execute-api.ap-south-1.amazonaws.com/dev
 ```
 
-### Configure API URL
-
-By default the app points to `http://localhost:3000` (local backend).
-
-To use your deployed AWS API Gateway URL:
-
-```bash
-# Run
-flutter run --dart-define=API_BASE_URL=https://abc123.execute-api.ap-south-1.amazonaws.com/dev
-
-# Build
-flutter build apk --dart-define=API_BASE_URL=https://abc123...
-```
-
-### Run on device/emulator
-
-```bash
-flutter run
-```
+See **[docs/deployment.md](docs/deployment.md)** for full production deployment instructions.
 
 ---
 
-## Onboarding Flow
+## Architecture Overview
 
 ```
-1. Language Selection  →  select Hindi / English / regional language
-2. Phone Number        →  mobile number + optional name  →  POST /user  →  JWT issued
-3. Welcome             →  feature intro
-4. Home                →  voice chat, health, commerce
+User (Web / Flutter / WhatsApp)
+        │
+        ▼
+  API Gateway (REST)
+        │
+        ▼
+  AWS Lambda (Python 3.12)
+    ├── Auth middleware (JWT)
+    ├── LangGraph Agent
+    │     ├── classify_node  →  Intent classification (Bedrock)
+    │     │                     + LLM location extraction
+    │     ├── health_node    →  Symptom guidance + red-flag detection
+    │     ├── nearby_node    →  Google Places API (GPS ladder: 10→20→50 km)
+    │     ├── shops_node     →  DynamoDB shop lookup → Google Places fallback
+    │     └── general_node   →  General rural queries
+    ├── Amazon Transcribe   (audio → text)
+    └── Amazon Polly        (text → audio)
+        │
+        ▼
+  DynamoDB  ·  S3  ·  SNS
 ```
+
+**Location resolution priority:**
+1. LLM-extracted location from query (e.g. "clinics in Aklera" → searches Aklera)
+2. GPS coordinates from the device/browser (radius ladder: 10 km → 20 km → 50 km)
+3. Stored user pincode (text search anchored to pincode)
+4. Prompt user for location if none available
 
 ---
 
-## API Reference
-
-All protected endpoints require:
-```
-Authorization: Bearer <token>
-```
+## API Routes
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/user` | — | Register / login, returns JWT |
 | GET | `/user/{userId}` | — | Get user profile |
-| POST | `/chat` | ✅ | Voice/text → AI reply + audio |
+| POST | `/chat` | ✅ | General voice/text → AI reply + audio |
 | POST | `/audio/upload-url` | ✅ | Presigned S3 URL for audio upload |
 | POST | `/health/query` | ✅ | Symptom → health guidance |
-| POST | `/health/nearby` | — | Clinics/pharmacies by pincode |
-| POST | `/commerce/shops` | — | Nearby shops by pincode |
+| POST | `/health/nearby` | — | Clinics/pharmacies by location |
+| POST | `/commerce/shops` | — | Nearby shops by location |
 | POST | `/commerce/order` | ✅ | Place order |
 | GET | `/commerce/order/{id}` | ✅ | Order status |
 | POST | `/shop` | ✅ | Register shop |
@@ -164,69 +145,103 @@ Authorization: Bearer <token>
 | POST | `/shop/{shopId}/inventory` | ✅ Owner | Upload inventory |
 | GET | `/shop/{shopId}/orders` | ✅ Owner | Incoming orders |
 | GET | `/shop/{shopId}/analytics` | ✅ Owner | Daily revenue |
-| GET | `/webhook/whatsapp` | — | WhatsApp verify |
+| GET | `/webhook/whatsapp` | — | WhatsApp webhook verify |
 | POST | `/webhook/whatsapp` | — | Incoming WhatsApp messages |
 
 ---
 
-## Low Bandwidth Mode (US-22)
+## Web App Routes
 
-Pass `"lowBandwidth": true` in any request body to receive compressed OGG audio (~70% smaller than MP3, optimised for 2G/slow connections).
+| Route | Description |
+|---|---|
+| `/` | Login (phone number) |
+| `/phone` | OTP / phone verification |
+| `/welcome` | Post-login welcome screen |
+| `/home` | Main dashboard |
+| `/health` | AI health chat |
+| `/commerce/shops` | Shop discovery |
+| `/commerce/order` | Order placement |
+| `/shop/dashboard` | Shop owner dashboard |
+| `/shop/inventory` | Inventory management |
+| `/legal/privacy-policy` | Privacy policy |
+
+See **[docs/web-ui.md](docs/web-ui.md)** for full UI documentation.
 
 ---
 
-## CloudWatch Logs
+## Documentation
 
-All handlers emit structured JSON logs:
+| Document | Description |
+|---|---|
+| [docs/web-ui.md](docs/web-ui.md) | Web frontend — screens, components, state, i18n |
+| [docs/backend.md](docs/backend.md) | Backend architecture — agent, services, data models |
+| [docs/deployment.md](docs/deployment.md) | Deploy backend, web app, and Flutter app to production |
+| [design.md](design.md) | High-level system design |
+| [requirements.md](requirements.md) | Product requirements |
+| [user-stories.md](user-stories.md) | All 23 user stories |
 
-```json
-{
-  "timestamp": "2025-02-25T10:00:00Z",
-  "level": "INFO",
-  "service": "gramsathi-backend",
-  "stage": "dev",
-  "event": "chat_request",
-  "user_id": "ph-9876543210",
-  "language": "hi",
-  "has_audio": false
-}
+---
+
+## Tests
+
+```bash
+cd backend
+source venv/bin/activate
+pytest tests/ -v          # 85 tests across 7 suites
 ```
 
+Test suites:
+
+| File | What it covers |
+|---|---|
+| `test_auth.py` | JWT issue / verify |
+| `test_user_handler.py` | User register / login |
+| `test_health_handler.py` | Health query, emergency path, audio flow |
+| `test_nearby_features.py` | Google Places routing, radius expansion, LLM location extraction |
+| `test_commerce_handler.py` | Shop discovery, order placement |
+| `test_shop_owner_handler.py` | Shop registration, inventory, analytics |
+| `test_utils.py` | Config, constants, response helpers |
+
 ---
 
-## WhatsApp Integration
+## Supported Languages
 
-1. Create a Meta App and enable WhatsApp Business API
-2. Set webhook URL to: `https://<api-gw-url>/webhook/whatsapp`
-3. Set verify token in `.env`: `WHATSAPP_VERIFY_TOKEN=your-token`
-4. Add `WHATSAPP_ACCESS_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID`
+| Code | Language |
+|---|---|
+| `hi` | Hindi (default) |
+| `en` | English |
+| `mr` | Marathi |
+| `ta` | Tamil |
+| `te` | Telugu |
+| `kn` | Kannada |
+| `bn` | Bengali |
+| `gu` | Gujarati |
 
 ---
 
-## User Stories Coverage
+## Environment Variables
 
-| Story | Description | Status |
-|---|---|---|
-| US-01 | Language selection & onboarding | ✅ |
-| US-02 | Voice input | ✅ |
-| US-03 | Text input fallback | ✅ |
-| US-04 | Voice + text output | ✅ |
-| US-05 | Symptom capture | ✅ |
-| US-06 | Basic health guidance | ✅ |
-| US-07 | Red flag detection | ✅ |
-| US-08 | Nearby clinics/pharmacies | ✅ |
-| US-09 | Doctor summary | ✅ |
-| US-10 | Discover local shops | ✅ |
-| US-11 | Assisted ordering | ✅ |
-| US-12 | Order confirmation | ✅ |
-| US-13 | Shop registration | ✅ |
-| US-14 | Inventory upload | ✅ |
-| US-15 | Order notifications (SNS) | ✅ |
-| US-16 | Analytics dashboard | ✅ |
-| US-17 | Intent classification | ✅ |
-| US-18 | Conversation memory | ✅ |
-| US-19 | Regional language processing | ✅ |
-| US-20 | JWT Authentication | ✅ |
-| US-21 | PII minimisation | ✅ |
-| US-22 | Low bandwidth mode | ✅ |
-| US-23 | CloudWatch monitoring | ✅ |
+### Backend (`.env`)
+| Variable | Description |
+|---|---|
+| `JWT_SECRET` | Secret for signing JWTs |
+| `GOOGLE_PLACES_API_KEY` | Google Places API (New) key |
+| `BEDROCK_MODEL_ID` | Bedrock model (default: Claude 3 Haiku) |
+| `WHATSAPP_VERIFY_TOKEN` | Meta webhook verify token |
+| `WHATSAPP_ACCESS_TOKEN` | Meta Graph API access token |
+| `WHATSAPP_PHONE_NUMBER_ID` | Meta phone number ID |
+| `WHATSAPP_APP_SECRET` | Meta app secret for signature verification |
+| `STAGE` | `dev` or `prod` |
+| `AWS_REGION` | AWS region (default: `ap-south-1`) |
+
+### Web App (`.env.local`)
+| Variable | Description |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | Backend API base URL |
+| `NEXT_PUBLIC_APP_URL` | Web app public URL (used for canonical URLs) |
+
+---
+
+## License
+
+Private — all rights reserved.
