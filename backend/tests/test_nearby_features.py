@@ -1,21 +1,19 @@
 """
-Tests for nearby clinic/pharmacy features (US-L1, US-L2, US-L3).
+Tests for nearby clinic/pharmacy/shop features — Google Places + LangGraph architecture.
 
 Covers:
-  - NominatimService.geocode() — HTTP + DynamoDB cache
-  - OverpassService.search_nearby() — HTTP + result parsing
-  - health handler /health/query nearby path:
-      GPS → Overpass → DynamoDB fallback
-      City text → Bedrock → Nominatim → Overpass → DynamoDB fallback
-      Retail shops → DynamoDB only (no OSM)
+  - GooglePlacesService routing (GPS, force_text, pincode anchor)
+  - Radius auto-expansion (10 km → 20 km → 50 km)
+  - LangGraph graph nodes: nearby_facilities_node, shops_node
+  - No-location fallback reply
+  - Named-location vs GPS routing decisions
 """
 
 import json
-import io
 import pytest
 import boto3
 from moto import mock_aws
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, call
 
 from src.utils.config import config
 from src.utils.auth import create_token
@@ -36,583 +34,537 @@ def aws_credentials(monkeypatch):
 def dynamo_tables():
     with mock_aws():
         client = boto3.client("dynamodb", region_name="ap-south-1")
-
-        client.create_table(
-            TableName=config.CONVERSATIONS_TABLE,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[
-                {"AttributeName": "conversationId", "AttributeType": "S"},
-                {"AttributeName": "userId", "AttributeType": "S"},
-            ],
-            KeySchema=[{"AttributeName": "conversationId", "KeyType": "HASH"}],
-            GlobalSecondaryIndexes=[{
-                "IndexName": "UserConversationsIndex",
-                "KeySchema": [{"AttributeName": "userId", "KeyType": "HASH"}],
-                "Projection": {"ProjectionType": "ALL"},
-            }],
-        )
-        client.create_table(
-            TableName=config.SHOPS_TABLE,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[
-                {"AttributeName": "shopId", "AttributeType": "S"},
-                {"AttributeName": "pincode", "AttributeType": "S"},
-            ],
-            KeySchema=[{"AttributeName": "shopId", "KeyType": "HASH"}],
-            GlobalSecondaryIndexes=[{
-                "IndexName": "PincodeIndex",
-                "KeySchema": [{"AttributeName": "pincode", "KeyType": "HASH"}],
-                "Projection": {"ProjectionType": "ALL"},
-            }],
-        )
-        client.create_table(
-            TableName=config.RESPONSE_CACHE_TABLE,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[{"AttributeName": "cacheKey", "AttributeType": "S"}],
-            KeySchema=[{"AttributeName": "cacheKey", "KeyType": "HASH"}],
-        )
-        client.create_table(
-            TableName=config.GEO_CACHE_TABLE,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[{"AttributeName": "locationKey", "AttributeType": "S"}],
-            KeySchema=[{"AttributeName": "locationKey", "KeyType": "HASH"}],
-        )
-        client.create_table(
-            TableName=config.USERS_TABLE,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[{"AttributeName": "userId", "AttributeType": "S"}],
-            KeySchema=[{"AttributeName": "userId", "KeyType": "HASH"}],
-        )
+        for cfg in [
+            (config.CONVERSATIONS_TABLE, "conversationId", "userId", "UserConversationsIndex"),
+            (config.SHOPS_TABLE, "shopId", "pincode", "PincodeIndex"),
+            (config.USERS_TABLE, "userId", None, None),
+            (config.RESPONSE_CACHE_TABLE, "cacheKey", None, None),
+        ]:
+            table_name, pk, gsi_key, gsi_name = cfg
+            attrs = [{"AttributeName": pk, "AttributeType": "S"}]
+            if gsi_key:
+                attrs.append({"AttributeName": gsi_key, "AttributeType": "S"})
+            kwargs = dict(
+                TableName=table_name,
+                BillingMode="PAY_PER_REQUEST",
+                AttributeDefinitions=attrs,
+                KeySchema=[{"AttributeName": pk, "KeyType": "HASH"}],
+            )
+            if gsi_name and gsi_key:
+                kwargs["GlobalSecondaryIndexes"] = [{
+                    "IndexName": gsi_name,
+                    "KeySchema": [{"AttributeName": gsi_key, "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }]
+            client.create_table(**kwargs)
         yield
 
 
-def _auth_event(path, body, user_id="user-nearby-test"):
+def _google_place(name="Test Clinic", phone="9000000001", address="Test St"):
+    return {"name": name, "phone": phone, "address": address,
+            "lat": 28.6, "lon": 77.2, "category": "Clinic", "rating": 4.2, "source": "google"}
+
+
+def _auth_event(body, user_id="user-nearby-test"):
     return {
         "httpMethod": "POST",
-        "path": path,
+        "path": "/health/query",
         "headers": {"Authorization": f"Bearer {create_token(user_id)}"},
         "body": json.dumps(body),
     }
 
 
-def _nominatim_response(lat="28.6139", lon="77.2090"):
-    """Build a fake Nominatim HTTP response body."""
-    return json.dumps([{"lat": lat, "lon": lon, "display_name": "Delhi, India"}]).encode()
-
-
-def _overpass_response(amenity="clinic", name="City Clinic", phone="9000000001"):
-    """Build a fake Overpass API response body."""
-    return json.dumps({
-        "elements": [{
-            "type": "node",
-            "id": 123456,
-            "lat": 28.615,
-            "lon": 77.210,
-            "tags": {
-                "amenity": amenity,
-                "name": name,
-                "phone": phone,
-                "addr:street": "MG Road",
-                "addr:city": "Delhi",
-            }
-        }]
-    }).encode()
-
-
-def _mock_urlopen(response_bytes):
-    """Return a context-manager mock that yields an HTTP-like response."""
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = response_bytes
-    mock_resp.__enter__ = lambda s: s
-    mock_resp.__exit__ = MagicMock(return_value=False)
-    return mock_resp
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# NominatimService tests
+# GooglePlacesService — routing logic
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestNominatimService:
+class TestGooglePlacesRouting:
 
-    @mock_aws
-    def test_geocode_returns_lat_lon(self, dynamo_tables):
-        """Happy path — Nominatim returns coordinates."""
-        from src.services.nominatim_service import NominatimService
-        svc = NominatimService()
+    @pytest.fixture(autouse=True)
+    def fake_api_key(self, monkeypatch):
+        """Ensure API key check passes so tests reach routing logic."""
+        import src.services.google_places_service as gps_mod
+        monkeypatch.setattr(gps_mod.config, "GOOGLE_PLACES_API_KEY", "fake-key-for-tests")
 
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(_nominatim_response())):
-            result = svc.geocode("Delhi")
+    def test_uses_nearby_search_when_gps_provided(self, monkeypatch):
+        """GPS coordinates present → _nearby_search is called."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
 
-        assert result is not None
-        lat, lon = result
-        assert abs(lat - 28.6139) < 0.001
-        assert abs(lon - 77.2090) < 0.001
+        nearby_called = {}
+        monkeypatch.setattr(svc, "_nearby_search",
+                            lambda lat, lon, kind, max_results: (
+                                nearby_called.update({"lat": lat, "lon": lon}) or [_google_place()]
+                            ))
+        monkeypatch.setattr(svc, "_text_search", lambda *a, **kw: [])
 
-    @mock_aws
-    def test_geocode_caches_in_dynamodb(self, dynamo_tables):
-        """Second call must hit DynamoDB, not make another HTTP request."""
-        from src.services.nominatim_service import NominatimService
-        svc = NominatimService()
-
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(_nominatim_response())) as mock_http:
-            svc.geocode("Delhi")
-            svc.geocode("delhi")   # same key (lowercased)
-
-        # Only one HTTP call — second hit is served from cache
-        assert mock_http.call_count == 1
-
-    @mock_aws
-    def test_geocode_returns_none_on_empty_response(self, dynamo_tables):
-        """Nominatim returns [] → should return None gracefully."""
-        from src.services.nominatim_service import NominatimService
-        svc = NominatimService()
-
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(b"[]")):
-            result = svc.geocode("XYZUnknownPlace")
-
-        assert result is None
-
-    @mock_aws
-    def test_geocode_returns_none_on_network_error(self, dynamo_tables):
-        """Network failure → should return None, not raise."""
-        from src.services.nominatim_service import NominatimService
-        svc = NominatimService()
-
-        with patch("urllib.request.urlopen", side_effect=OSError("timeout")):
-            result = svc.geocode("Delhi")
-
-        assert result is None
-
-    @mock_aws
-    def test_geocode_uses_cache_on_second_call(self, dynamo_tables):
-        """Verify the cache read path returns the stored coordinates."""
-        from src.services.nominatim_service import NominatimService
-        from src.services.database import db
-        db.set_geo_cache("mumbai", 19.0760, 72.8777)
-
-        svc = NominatimService()
-        with patch("urllib.request.urlopen") as mock_http:
-            result = svc.geocode("Mumbai")
-
-        mock_http.assert_not_called()
-        assert result is not None
-        lat, lon = result
-        assert abs(lat - 19.0760) < 0.001
-        assert abs(lon - 72.8777) < 0.001
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# OverpassService tests
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestOverpassService:
-
-    def test_search_nearby_returns_parsed_results(self):
-        """Happy path — Overpass returns one node, we parse it correctly."""
-        from src.services.overpass_service import OverpassService
-        svc = OverpassService()
-
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(
-            _overpass_response(amenity="clinic", name="City Clinic", phone="9000000001")
-        )):
-            results = svc.search_nearby(28.6139, 77.2090, kind="clinic")
-
+        results = svc.search_facilities("nearby clinics", kind="clinic",
+                                        lat=28.6, lon=77.2, max_results=5)
+        assert nearby_called.get("lat") == 28.6
         assert len(results) == 1
-        assert results[0]["name"] == "City Clinic"
-        assert results[0]["phone"] == "9000000001"
-        assert results[0]["category"] == "clinic"
-        assert results[0]["source"] == "osm"
 
-    def test_search_nearby_returns_empty_on_network_error(self):
-        """Network failure → returns [], does not raise."""
-        from src.services.overpass_service import OverpassService
-        svc = OverpassService()
+    def test_uses_text_search_when_no_gps(self, monkeypatch):
+        """No GPS → _text_search is called."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
 
-        with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
-            results = svc.search_nearby(28.6139, 77.2090, kind="hospital")
+        text_called = {}
+        monkeypatch.setattr(svc, "_text_search",
+                            lambda query, kind, max_results, pincode=None: (
+                                text_called.update({"query": query}) or [_google_place()]
+                            ))
+        monkeypatch.setattr(svc, "_nearby_search", lambda *a, **kw: [])
 
-        assert results == []
+        svc.search_facilities("clinics near me", kind="clinic",
+                              lat=None, lon=None, max_results=5)
+        assert "query" in text_called
 
-    def test_search_nearby_returns_empty_when_no_elements(self):
-        """Overpass returns no results → returns []."""
-        from src.services.overpass_service import OverpassService
-        svc = OverpassService()
+    def test_force_text_search_ignores_gps(self, monkeypatch):
+        """force_text_search=True → text search even when GPS is available."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
 
-        empty_body = json.dumps({"elements": []}).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(empty_body)):
-            results = svc.search_nearby(28.6139, 77.2090, kind="pharmacy")
+        text_called = {}
+        monkeypatch.setattr(svc, "_text_search",
+                            lambda query, kind, max_results, pincode=None: (
+                                text_called.update({"called": True}) or [_google_place()]
+                            ))
+        monkeypatch.setattr(svc, "_nearby_search",
+                            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not call nearby search")))
 
-        assert results == []
+        svc.search_facilities("clinics in Kota", kind="clinic",
+                              lat=28.6, lon=77.2,
+                              force_text_search=True, max_results=5)
+        assert text_called.get("called") is True
 
-    def test_search_nearby_respects_max_results(self):
-        """Result list must be capped at max_results."""
-        from src.services.overpass_service import OverpassService
-        svc = OverpassService()
+    def test_pincode_anchor_used_when_no_gps(self, monkeypatch):
+        """No GPS, pincode provided → _text_search receives the pincode."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
 
-        many_nodes = [
-            {"type": "node", "id": i, "lat": 28.6 + i * 0.001, "lon": 77.2,
-             "tags": {"amenity": "clinic", "name": f"Clinic {i}"}}
-            for i in range(10)
-        ]
-        body = json.dumps({"elements": many_nodes}).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(body)):
-            results = svc.search_nearby(28.6139, 77.2090, kind="clinic", max_results=3)
+        received_pincode = {}
+        monkeypatch.setattr(svc, "_text_search",
+                            lambda query, kind, max_results, pincode=None: (
+                                received_pincode.update({"pincode": pincode}) or []
+                            ))
+        monkeypatch.setattr(svc, "_nearby_search", lambda *a, **kw: [])
 
-        assert len(results) == 3
+        svc.search_facilities("nearby clinics", kind="clinic",
+                              lat=None, lon=None, pincode="324008", max_results=5)
+        assert received_pincode.get("pincode") == "324008"
 
-    def test_search_nearby_fallback_name(self):
-        """Node with no name tag should use 'Unknown'."""
-        from src.services.overpass_service import OverpassService
-        svc = OverpassService()
+    def test_pincode_anchored_query_built_correctly(self):
+        """_text_search with pincode builds 'clinics and doctors near 324008, India'."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
 
-        body = json.dumps({"elements": [
-            {"type": "node", "id": 1, "lat": 28.6, "lon": 77.2, "tags": {"amenity": "pharmacy"}}
-        ]}).encode()
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(body)):
-            results = svc.search_nearby(28.6139, 77.2090, kind="pharmacy")
+        sent_queries = []
 
-        assert results[0]["name"] == "Unknown"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Health handler — GPS path (Overpass primary)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestHealthHandlerGPSPath:
-
-    @mock_aws
-    def test_nearby_with_gps_uses_overpass(self, dynamo_tables, monkeypatch):
-        """When app sends lat/lon, Overpass is called and OSM results are returned."""
-        from src.handlers.health import handler
-        monkeypatch.setattr(
-            "src.handlers.health.overpass.search_nearby",
-            lambda lat, lon, kind, max_results: [{
-                "name": "OSM Clinic", "phone": "9001", "address": "Delhi", "source": "osm",
-                "category": "clinic", "lat": lat, "lon": lon,
-            }]
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "nearby clinic",
-            "language": "en",
-            "latitude": 28.6139,
-            "longitude": 77.2090,
-        })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
-
-        assert resp["statusCode"] == 200
-        assert "OSM Clinic" in body["text"]
-
-    @mock_aws
-    def test_nearby_gps_overpass_empty_falls_back_to_dynamo(self, dynamo_tables, monkeypatch):
-        """Overpass returns [] with GPS → handler falls back to DynamoDB shops."""
-        from src.handlers.health import handler
-        from src.services.database import db
-
-        db.save_shop({
-            "shopId": "clinic-dynamo-01",
-            "ownerId": "o1",
-            "name": "DynamoDB Clinic",
-            "ownerName": "Dr DB",
-            "phone": "9002",
-            "pincode": "324008",   # DEFAULT_NEARBY_PINCODE
-            "category": "clinic",
-            "status": "approved",
-            "inventory": [],
-            "createdAt": "2024-01-01",
-            "updatedAt": "2024-01-01",
-        })
-
-        # Overpass returns nothing
-        monkeypatch.setattr(
-            "src.handlers.health.overpass.search_nearby", lambda *a, **kw: []
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "nearby clinic",
-            "language": "en",
-            "latitude": 28.6139,
-            "longitude": 77.2090,
-        })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
-
-        assert resp["statusCode"] == 200
-        assert "DynamoDB Clinic" in body["text"]
-
-    @mock_aws
-    def test_nearby_invalid_gps_ignored_gracefully(self, dynamo_tables, monkeypatch):
-        """Malformed lat/lon in body must not crash the handler."""
-        from src.handlers.health import handler
-        monkeypatch.setattr(
-            "src.handlers.health.overpass.search_nearby", lambda *a, **kw: []
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "nearby clinic",
-            "language": "en",
-            "latitude": "not-a-number",
-            "longitude": "bad",
-        })
-        resp = handler(event, None)
-        # Should not crash — falls through to DynamoDB path
-        assert resp["statusCode"] == 200
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Health handler — City extraction path (Bedrock → Nominatim → Overpass)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestHealthHandlerCityPath:
-
-    @mock_aws
-    def test_city_in_query_uses_nominatim_then_overpass(self, dynamo_tables, monkeypatch):
-        """No GPS + Bedrock extracts city → Nominatim → Overpass returns results."""
-        from src.handlers.health import handler
-
-        # Bedrock extracts "Delhi" from the query
-        monkeypatch.setattr(
-            "src.handlers.health.bedrock.extract_nearby_location", lambda text: "Delhi"
-        )
-        # Nominatim geocodes Delhi
-        monkeypatch.setattr(
-            "src.handlers.health.nominatim.geocode", lambda city: (28.6139, 77.2090)
-        )
-        # Overpass returns one OSM result
-        monkeypatch.setattr(
-            "src.handlers.health.overpass.search_nearby",
-            lambda lat, lon, kind, max_results: [{
-                "name": "Delhi Hospital", "phone": "9003", "address": "New Delhi",
-                "category": "hospital", "source": "osm", "lat": lat, "lon": lon,
-            }]
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "Mujhe Delhi mein hospital chahiye",
-            "language": "hi",
-        })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
-
-        assert resp["statusCode"] == 200
-        assert "Delhi Hospital" in body["text"]
-
-    @mock_aws
-    def test_city_not_found_by_nominatim_falls_back_to_dynamo(self, dynamo_tables, monkeypatch):
-        """Nominatim returns None (unknown place) → DynamoDB fallback used."""
-        from src.handlers.health import handler
-        from src.services.database import db
-
-        db.save_shop({
-            "shopId": "pharmacy-dynamo-01",
-            "ownerId": "o2",
-            "name": "Pincode Pharmacy",
-            "ownerName": "Owner",
-            "phone": "9004",
-            "pincode": "324008",
-            "category": "pharmacy",
-            "status": "approved",
-            "inventory": [],
-            "createdAt": "2024-01-01",
-            "updatedAt": "2024-01-01",
-        })
-
-        monkeypatch.setattr(
-            "src.handlers.health.bedrock.extract_nearby_location", lambda text: "ZZZUnknown"
-        )
-        monkeypatch.setattr(
-            "src.handlers.health.nominatim.geocode", lambda city: None
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "pharmacy in ZZZUnknown",
-            "language": "en",
-        })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
-
-        assert resp["statusCode"] == 200
-        assert "Pincode Pharmacy" in body["text"]
-
-    @mock_aws
-    def test_no_city_no_gps_falls_back_to_dynamo(self, dynamo_tables, monkeypatch):
-        """No GPS and Bedrock returns None → pure DynamoDB fallback."""
-        from src.handlers.health import handler
-        from src.services.database import db
-
-        db.save_shop({
-            "shopId": "hosp-dynamo-01",
-            "ownerId": "o3",
-            "name": "Local Hospital",
-            "ownerName": "Owner",
-            "phone": "9005",
-            "pincode": "324008",
-            "category": "hospital",
-            "status": "approved",
-            "inventory": [],
-            "createdAt": "2024-01-01",
-            "updatedAt": "2024-01-01",
-        })
-
-        monkeypatch.setattr(
-            "src.handlers.health.bedrock.extract_nearby_location", lambda text: None
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "nearby hospital",
-            "language": "en",
-        })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
-
-        assert resp["statusCode"] == 200
-        assert "Local Hospital" in body["text"]
-
-    @mock_aws
-    def test_bedrock_location_extraction_error_falls_back_gracefully(self, dynamo_tables, monkeypatch):
-        """Even if Bedrock throws, the handler should not crash."""
-        from src.handlers.health import handler
-
-        monkeypatch.setattr(
-            "src.handlers.health.bedrock.extract_nearby_location",
-            lambda text: (_ for _ in ()).throw(RuntimeError("bedrock down"))
-        )
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
-
-        event = _auth_event("/health/query", {
-            "text": "nearby clinic",
-            "language": "en",
-        })
-        resp = handler(event, None)
-        # Should not 500 — falls through to DynamoDB fallback
-        assert resp["statusCode"] == 200
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Health handler — Retail shops still use DynamoDB only
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class TestHealthHandlerRetailPath:
-
-    @mock_aws
-    def test_retail_shop_query_uses_dynamo_not_overpass(self, dynamo_tables, monkeypatch):
-        """'nearby shop' should query DynamoDB only — Overpass must not be called."""
-        from src.handlers.health import handler
-        from src.services.database import db
-
-        db.save_shop({
-            "shopId": "kirana-01",
-            "ownerId": "o4",
-            "name": "Raju Kirana",
-            "ownerName": "Raju",
-            "phone": "9006",
-            "pincode": "324008",
-            "category": "grocery",
-            "status": "approved",
-            "inventory": [],
-            "createdAt": "2024-01-01",
-            "updatedAt": "2024-01-01",
-        })
-
-        overpass_called = {"flag": False}
-
-        def _overpass_spy(*a, **kw):
-            overpass_called["flag"] = True
+        def fake_call(url, payload):
+            sent_queries.append(payload.get("textQuery", ""))
             return []
 
-        monkeypatch.setattr("src.handlers.health.overpass.search_nearby", _overpass_spy)
-        monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
+        with patch.object(svc, "_call", side_effect=fake_call):
+            svc._text_search("nearby clinics", "clinic", 5, pincode="324008")
 
-        event = _auth_event("/health/query", {
-            "text": "nearby shop",
-            "language": "en",
-            "latitude": 28.6139,
-            "longitude": 77.2090,
+        assert len(sent_queries) == 1
+        assert "324008" in sent_queries[0]
+        assert "India" in sent_queries[0]
+
+    def test_no_gps_no_pincode_query_appends_india(self):
+        """No GPS, no pincode → appends ', India' to query."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+
+        sent_queries = []
+
+        def fake_call(url, payload):
+            sent_queries.append(payload.get("textQuery", ""))
+            return []
+
+        with patch.object(svc, "_call", side_effect=fake_call):
+            svc._text_search("clinics in Kota", "clinic", 5, pincode=None)
+
+        assert "India" in sent_queries[0]
+
+    def test_missing_api_key_returns_empty(self, monkeypatch):
+        """No API key → returns [] immediately without HTTP call."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+        monkeypatch.setattr("src.services.google_places_service.config",
+                            type("C", (), {"GOOGLE_PLACES_API_KEY": ""})())
+        with patch.object(svc, "_call",
+                          side_effect=AssertionError("should not make HTTP call")):
+            results = svc.search_facilities("clinics", lat=28.6, lon=77.2)
+        assert results == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GooglePlacesService — radius auto-expansion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRadiusExpansion:
+
+    def test_returns_results_at_10km(self, monkeypatch):
+        """First radius (10 km) succeeds — no further calls."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+
+        call_count = {"n": 0}
+
+        def fake_call(url, payload):
+            call_count["n"] += 1
+            return [_google_place()]   # non-empty first time
+
+        with patch.object(svc, "_call", side_effect=fake_call):
+            results = svc._nearby_search(28.6, 77.2, "clinic", 5)
+
+        assert call_count["n"] == 1
+        assert len(results) == 1
+
+    def test_expands_to_20km_when_10km_empty(self, monkeypatch):
+        """10 km returns [] → retries at 20 km."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+
+        radii_tried = []
+
+        def fake_call(url, payload):
+            radius = payload["locationRestriction"]["circle"]["radius"]
+            radii_tried.append(int(radius))
+            # Return results only at 20 km
+            return [_google_place()] if radius >= 20_000 else []
+
+        with patch.object(svc, "_call", side_effect=fake_call):
+            results = svc._nearby_search(28.6, 77.2, "clinic", 5)
+
+        assert 10_000 in radii_tried
+        assert 20_000 in radii_tried
+        assert len(results) == 1
+
+    def test_expands_to_50km_when_20km_empty(self):
+        """10 km and 20 km both empty → tries 50 km."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+
+        radii_tried = []
+
+        def fake_call(url, payload):
+            radius = payload["locationRestriction"]["circle"]["radius"]
+            radii_tried.append(int(radius))
+            return [_google_place()] if radius >= 50_000 else []
+
+        with patch.object(svc, "_call", side_effect=fake_call):
+            results = svc._nearby_search(28.6, 77.2, "hospital", 5)
+
+        assert radii_tried == [10_000, 20_000, 50_000]
+        assert len(results) == 1
+
+    def test_returns_empty_when_all_radii_empty(self):
+        """All three radii return [] → final result is []."""
+        from src.services.google_places_service import GooglePlacesService
+        svc = GooglePlacesService()
+
+        with patch.object(svc, "_call", return_value=[]):
+            results = svc._nearby_search(28.6, 77.2, "pharmacy", 5)
+
+        assert results == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LangGraph — nearby_facilities_node
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestNearbyFacilitiesNode:
+
+    def _state(self, **kwargs):
+        base = dict(text="nearby clinics", language="en",
+                    user_id="u1", pincode=None, lat=None, lon=None,
+                    conversation_history=[], system_extra="", use_cache=False,
+                    low_bandwidth=False, intent="nearby_facilities",
+                    nearby_kind="clinic", extracted_location=None,
+                    reply="", facilities=[])
+        base.update(kwargs)
+        return base
+
+    def test_uses_named_location_when_extracted(self, monkeypatch):
+        """extracted_location set → Google called with clean query, GPS ignored."""
+        from src.agents.graph import nearby_facilities_node
+
+        calls = []
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda query, kind, lat, lon, max_results, force_text_search=False, pincode=None: (
+                calls.append({"query": query, "lat": lat, "force_text": force_text_search})
+                or [_google_place("Aklera Clinic")]
+            )
+        )
+
+        state = self._state(extracted_location="Aklera", lat=28.6, lon=77.2)
+        result = nearby_facilities_node(state)
+
+        assert calls[0]["force_text"] is True
+        assert calls[0]["lat"] is None          # GPS ignored
+        assert "Aklera" in calls[0]["query"]
+        assert result["facilities"][0]["name"] == "Aklera Clinic"
+
+    def test_uses_gps_when_no_extracted_location(self, monkeypatch):
+        """No extracted_location, GPS available → GPS passed to search."""
+        from src.agents.graph import nearby_facilities_node
+
+        calls = []
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda query, kind, lat, lon, max_results, force_text_search=False, pincode=None: (
+                calls.append({"lat": lat, "lon": lon, "force_text": force_text_search})
+                or [_google_place()]
+            )
+        )
+
+        state = self._state(lat=28.6139, lon=77.2090)
+        nearby_facilities_node(state)
+
+        assert calls[0]["lat"] == 28.6139
+        assert calls[0]["force_text"] is False
+
+    def test_uses_pincode_when_no_gps_no_location(self, monkeypatch):
+        """No GPS, no named location, pincode available → pincode passed."""
+        from src.agents.graph import nearby_facilities_node
+
+        calls = []
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda query, kind, lat, lon, max_results, force_text_search=False, pincode=None: (
+                calls.append({"pincode": pincode}) or []
+            )
+        )
+
+        state = self._state(pincode="324008")
+        nearby_facilities_node(state)
+
+        assert calls[0]["pincode"] == "324008"
+
+    def test_returns_no_location_reply_when_nothing_available(self):
+        """No GPS, no pincode, no extracted location → friendly error message."""
+        from src.agents.graph import nearby_facilities_node
+
+        state = self._state()   # lat=None, lon=None, pincode=None, extracted_location=None
+        result = nearby_facilities_node(state)
+
+        assert result["facilities"] == []
+        assert len(result["reply"]) > 10    # some non-empty guidance message
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LangGraph — shops_node
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestShopsNode:
+
+    def _state(self, **kwargs):
+        base = dict(text="nearby shops", language="en",
+                    user_id="u1", pincode=None, lat=None, lon=None,
+                    conversation_history=[], system_extra="", use_cache=False,
+                    low_bandwidth=False, intent="shops", nearby_kind="",
+                    extracted_location=None, reply="", facilities=[])
+        base.update(kwargs)
+        return base
+
+    def test_named_location_skips_dynamodb(self, monkeypatch):
+        """extracted_location → Google text search, DynamoDB never queried."""
+        from src.agents.graph import shops_node
+
+        db_called = {"flag": False}
+        google_calls = []
+
+        monkeypatch.setattr(
+            "src.agents.graph.db.get_shops_by_pincode",
+            lambda p: (db_called.update({"flag": True}) or [])
+        )
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda query, kind, lat, lon, max_results, force_text_search=False, pincode=None: (
+                google_calls.append({"query": query, "force_text": force_text_search})
+                or [_google_place("Aklera Shop")]
+            )
+        )
+
+        state = self._state(extracted_location="Aklera")
+        result = shops_node(state)
+
+        assert db_called["flag"] is False
+        assert google_calls[0]["force_text"] is True
+        assert "Aklera" in google_calls[0]["query"]
+        assert result["facilities"][0]["name"] == "Aklera Shop"
+
+    @mock_aws
+    def test_nearby_returns_dynamodb_shops_first(self, dynamo_tables, monkeypatch):
+        """No named location + pincode → DynamoDB shops take priority over Google."""
+        from src.agents.graph import shops_node
+        from src.services.database import db
+
+        db.save_shop({
+            "shopId": "s1", "ownerId": "o1",
+            "name": "Ramu Kirana", "ownerName": "Ramu",
+            "phone": "9000000001", "pincode": "110001",
+            "status": "approved", "inventory": [],
+            "createdAt": "2024-01-01", "updatedAt": "2024-01-01",
         })
-        resp = handler(event, None)
-        body = json.loads(resp["body"])
 
-        assert resp["statusCode"] == 200
-        assert overpass_called["flag"] is False
-        assert "Raju Kirana" in body["text"]
+        google_called = {"flag": False}
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda *a, **kw: (google_called.update({"flag": True}) or [])
+        )
+
+        state = self._state(pincode="110001")
+        result = shops_node(state)
+
+        assert google_called["flag"] is False       # DynamoDB hit — Google not called
+        assert result["facilities"][0]["name"] == "Ramu Kirana"
+
+    @mock_aws
+    def test_nearby_falls_back_to_google_when_no_dynamo_shops(self, dynamo_tables, monkeypatch):
+        """DynamoDB empty for pincode → Google Places called."""
+        from src.agents.graph import shops_node
+
+        google_called = {"flag": False}
+        monkeypatch.setattr(
+            "src.agents.graph.google_places.search_facilities",
+            lambda *a, **kw: (
+                google_called.update({"flag": True}) or [_google_place("Google Shop")]
+            )
+        )
+
+        state = self._state(pincode="999999")   # no shops in DB for this pincode
+        result = shops_node(state)
+
+        assert google_called["flag"] is True
+        assert result["facilities"][0]["name"] == "Google Shop"
+
+    def test_returns_no_location_reply_when_nothing_available(self):
+        """No GPS, no pincode, no extracted location → guidance message."""
+        from src.agents.graph import shops_node
+
+        state = self._state()
+        result = shops_node(state)
+
+        assert result["facilities"] == []
+        assert len(result["reply"]) > 10
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# BedrockService.extract_nearby_location unit tests
+# LangGraph — _fast_classify routing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestBedrockExtractLocation:
+class TestFastClassify:
+
+    def _classify(self, text):
+        from src.agents.graph import _fast_classify
+        return _fast_classify(text)
+
+    def test_nearby_clinic_routes_to_facilities(self):
+        intent, kind = self._classify("nearby clinic")
+        assert intent == "nearby_facilities"
+        assert kind == "clinic"
+
+    def test_hospitals_near_me(self):
+        intent, kind = self._classify("hospitals near me")
+        assert intent == "nearby_facilities"
+        assert kind == "hospital"
+
+    def test_pharmacy_query(self):
+        intent, kind = self._classify("any pharmacy around")
+        assert intent == "nearby_facilities"
+        assert kind == "pharmacy"
+
+    def test_shops_query(self):
+        intent, _ = self._classify("nearby shops")
+        assert intent == "shops"
+
+    def test_kirana_query(self):
+        intent, _ = self._classify("kirana store near me")
+        assert intent == "shops"
+
+    def test_health_advice_is_ambiguous(self):
+        intent, _ = self._classify("I have a fever")
+        assert intent == ""     # falls through to LLM
+
+    def test_hindi_clinic_query(self):
+        intent, kind = self._classify("नजदीक क्लीनिक बताओ")
+        assert intent == "nearby_facilities"
+
+    def test_hindi_shop_query(self):
+        intent, _ = self._classify("पास में दुकान")
+        assert intent == "shops"
+
+    def test_ambiguous_clinic_alone_falls_through(self):
+        """'clinics' alone (no location word) → ambiguous → falls to LLM."""
+        intent, _ = self._classify("clinics")
+        assert intent == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LangGraph — _llm_extract_location
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestLLMExtractLocation:
 
     def test_extracts_city_name(self, monkeypatch):
-        """Bedrock returns clean JSON with a city name."""
-        from src.services.bedrock_service import BedrockService
-        svc = BedrockService.__new__(BedrockService)
-        monkeypatch.setattr(svc, "chat", lambda *a, **kw: '{"location": "Mumbai"}')
-        assert svc.extract_nearby_location("Mumbai mein clinic chahiye") == "Mumbai"
+        from src.agents.graph import _llm_extract_location
+        monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "Aklera")
+        assert _llm_extract_location("shops in Aklera") == "Aklera"
 
-    def test_returns_none_when_location_null(self, monkeypatch):
-        """Bedrock returns null location → None."""
-        from src.services.bedrock_service import BedrockService
-        svc = BedrockService.__new__(BedrockService)
-        monkeypatch.setattr(svc, "chat", lambda *a, **kw: '{"location": null}')
-        assert svc.extract_nearby_location("nearby clinic") is None
+    def test_returns_none_when_llm_says_none(self, monkeypatch):
+        from src.agents.graph import _llm_extract_location
+        monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "NONE")
+        assert _llm_extract_location("nearby clinics") is None
 
-    def test_returns_none_on_malformed_json(self, monkeypatch):
-        """Bedrock returns garbage → None, does not raise."""
-        from src.services.bedrock_service import BedrockService
-        svc = BedrockService.__new__(BedrockService)
-        monkeypatch.setattr(svc, "chat", lambda *a, **kw: "sure! Delhi is the city.")
-        assert svc.extract_nearby_location("Delhi clinic") is None
+    def test_strips_punctuation_from_response(self, monkeypatch):
+        from src.agents.graph import _llm_extract_location
+        monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: '"Jaipur."')
+        assert _llm_extract_location("shops in Jaipur") == "Jaipur"
 
-    def test_returns_none_on_chat_exception(self, monkeypatch):
-        """If bedrock.chat throws, extract_nearby_location returns None."""
-        from src.services.bedrock_service import BedrockService
-        svc = BedrockService.__new__(BedrockService)
-        monkeypatch.setattr(svc, "chat", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("error")))
-        assert svc.extract_nearby_location("Delhi clinic") is None
+    def test_returns_none_on_empty_response(self, monkeypatch):
+        from src.agents.graph import _llm_extract_location
+        monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "")
+        assert _llm_extract_location("nearby shops") is None
 
-    def test_strips_whitespace_from_city(self, monkeypatch):
-        """City with extra whitespace is stripped."""
-        from src.services.bedrock_service import BedrockService
-        svc = BedrockService.__new__(BedrockService)
-        monkeypatch.setattr(svc, "chat", lambda *a, **kw: '{"location": "  Pune  "}')
-        assert svc.extract_nearby_location("Pune mein hospital") == "Pune"
+    def test_returns_none_when_bedrock_throws(self, monkeypatch):
+        from src.agents.graph import _llm_extract_location
+        monkeypatch.setattr("src.agents.graph.bedrock.chat",
+                            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("bedrock down")))
+        assert _llm_extract_location("clinics in Delhi") is None   # no crash
+
+    def test_none_returned_gracefully_in_classify_node(self, monkeypatch):
+        """classify_node sets extracted_location=None when LLM returns NONE."""
+        from src.agents.graph import classify_node
+        monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "NONE")
+
+        state = dict(text="nearby clinics", language="en", user_id="u1",
+                     pincode=None, lat=None, lon=None, conversation_history=[],
+                     system_extra="", use_cache=False, low_bandwidth=False,
+                     intent="", nearby_kind="", extracted_location=None,
+                     reply="", facilities=[])
+        result = classify_node(state)
+        assert result["extracted_location"] is None
+        assert result["intent"] == "nearby_facilities"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DynamoDB geo cache unit tests
+# No-location reply — all 8 languages
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestGeoCacheDynamo:
+class TestNoLocationReply:
 
-    @mock_aws
-    def test_set_and_get_geo_cache(self, dynamo_tables):
-        """set_geo_cache then get_geo_cache returns correct lat/lon."""
-        from src.services.database import db
-        db.set_geo_cache("bangalore", 12.9716, 77.5946)
-        cached = db.get_geo_cache("bangalore")
-        assert cached is not None
-        assert abs(float(cached["lat"]) - 12.9716) < 0.001
-        assert abs(float(cached["lon"]) - 77.5946) < 0.001
+    @pytest.mark.parametrize("lang", ["hi", "en", "mr", "ta", "te", "kn", "bn", "gu"])
+    def test_reply_non_empty_for_all_languages(self, lang):
+        from src.agents.graph import _no_location_reply
+        msg = _no_location_reply(lang)
+        assert isinstance(msg, str) and len(msg) > 10
 
-    @mock_aws
-    def test_get_geo_cache_miss_returns_none(self, dynamo_tables):
-        """Cache miss returns None."""
-        from src.services.database import db
-        assert db.get_geo_cache("nonexistent-city-xyz") is None
-
-    @mock_aws
-    def test_geo_cache_overwrite(self, dynamo_tables):
-        """Writing the same key twice updates the value."""
-        from src.services.database import db
-        db.set_geo_cache("pune", 18.5204, 73.8567)
-        db.set_geo_cache("pune", 18.9999, 73.9999)   # overwrite
-        cached = db.get_geo_cache("pune")
-        assert abs(float(cached["lat"]) - 18.9999) < 0.001
+    def test_unknown_language_falls_back_to_english(self):
+        from src.agents.graph import _no_location_reply
+        msg = _no_location_reply("xx")
+        en_msg = _no_location_reply("en")
+        assert msg == en_msg

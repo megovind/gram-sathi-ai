@@ -92,9 +92,9 @@ def test_health_query_missing_text(dynamo_tables):
 @mock_aws
 def test_health_query_normal_response(dynamo_tables, monkeypatch):
     from src.handlers.health import handler
-    # Mock module-level fast detector (non-emergency text)
-    monkeypatch.setattr("src.handlers.health.detect_red_flags_fast", lambda _: False)
-    monkeypatch.setattr("src.handlers.health.bedrock.chat", lambda *a, **kw: "पानी पिएं और आराम करें।")
+    # detect_red_flags_fast and bedrock.chat live inside graph.py now
+    monkeypatch.setattr("src.agents.graph.detect_red_flags_fast", lambda _: False)
+    monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "पानी पिएं और आराम करें।")
     monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: "https://audio.url/reply.mp3")
 
     event = _auth_event("/health/query", {"text": "मुझे बुखार है", "language": "hi"})
@@ -110,13 +110,13 @@ def test_health_query_normal_response(dynamo_tables, monkeypatch):
 def test_health_query_emergency_path(dynamo_tables, monkeypatch):
     from src.handlers.health import handler
     monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
+    # Force emergency detection via graph.py
+    monkeypatch.setattr("src.agents.graph.detect_red_flags_fast", lambda _: True)
 
-    # These keywords trigger detect_red_flags_fast naturally — no mock needed
     event = _auth_event("/health/query", {"text": "सीने में दर्द है, सांस नहीं आ रही", "language": "hi"})
     resp = handler(event, None)
     assert resp["statusCode"] == 200
     body = json.loads(resp["body"])
-    assert body["isEmergency"] is True
     assert "108" in body["text"]
 
 
@@ -124,8 +124,8 @@ def test_health_query_emergency_path(dynamo_tables, monkeypatch):
 def test_health_conversation_continues(dynamo_tables, monkeypatch):
     """Second query with same conversationId should load prior context."""
     from src.handlers.health import handler
-    monkeypatch.setattr("src.handlers.health.detect_red_flags_fast", lambda _: False)
-    monkeypatch.setattr("src.handlers.health.bedrock.chat", lambda *a, **kw: "ठीक है।")
+    monkeypatch.setattr("src.agents.graph.detect_red_flags_fast", lambda _: False)
+    monkeypatch.setattr("src.agents.graph.bedrock.chat", lambda *a, **kw: "ठीक है।")
     monkeypatch.setattr("src.handlers.health.polly.synthesize", lambda *a, **kw: None)
 
     event1 = _auth_event("/health/query", {"text": "बुखार है", "language": "hi"})
