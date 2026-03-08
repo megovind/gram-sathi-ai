@@ -92,7 +92,7 @@ def _classify_intent_fast(text: str) -> str:
 
 
 # Increment this when prompts change significantly to invalidate old cached responses
-_CACHE_VERSION = "v2"
+_CACHE_VERSION = "v5"
 
 def _cache_key(text: str, language: str) -> str:
     normalized = re.sub(r"\s+", " ", text.lower().strip())

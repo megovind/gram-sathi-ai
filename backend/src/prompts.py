@@ -32,8 +32,9 @@ INTENT VALUES:
                                 "नजदीकी फार्मेसी दिखाओ"
 
   health_and_nearby – user describes a health problem AND wants nearby medical
-                      facilities. BOTH elements must be present.
+                      facilities. BOTH elements must be present. Ignore greetings.
                       Examples: "I have fever, find a clinic",
+                                "Hello. I have fever. Find hospitals nearby",
                                 "सिरदर्द है, पास में डॉक्टर चाहिए",
                                 "chest pain need hospital",
                                 "feeling dizzy, any clinic nearby"
@@ -62,17 +63,26 @@ EXAMPLES:
   "I have fever, can you find me nearby clinics"
   → {"intent":"health_and_nearby","kind":"clinic","location":null}
 
+  "Hello. I am having fever. Can you find me some hospitals nearby?"
+  → {"intent":"health_and_nearby","kind":"hospital","location":null}
+
+  "मुझे बुखार है, पास में अस्पताल बताओ"
+  → {"intent":"health_and_nearby","kind":"hospital","location":null}
+
+  "headache dizzy, any clinic nearby"
+  → {"intent":"health_and_nearby","kind":"clinic","location":null}
+
   "show hospitals in Kota"
   → {"intent":"nearby_facilities","kind":"hospital","location":"Kota"}
 
   "मुझे सिरदर्द है"
   → {"intent":"health_advice","kind":"","location":null}
 
+  "I have fever"
+  → {"intent":"health_advice","kind":"","location":null}
+
   "find kirana shops near me"
   → {"intent":"shops","kind":"shops","location":null}
-
-  "headache dizzy, any clinic nearby"
-  → {"intent":"health_and_nearby","kind":"clinic","location":null}
 
   "Aklera ke shops batao"
   → {"intent":"shops","kind":"shops","location":"Aklera"}
@@ -109,9 +119,14 @@ Use simple language suited for rural India. Keep the total response under 130 wo
 # Same health guidance but shorter — facility cards follow immediately.
 #
 HEALTH_AND_NEARBY_EXTRA = """\
-Give health advice ONLY. Do not write anything about clinics, hospitals, facilities, cards, or nearby places — that information is handled elsewhere.
-Start with one warm sentence naming the user's symptom.
-Provide 2 or 3 practical home-care steps as a bulleted list using • bullets.
-End with one sentence about when to see a doctor.
-Never diagnose. Never name drug brands or dosages. Keep under 90 words.\
+The user mentioned a health symptom and also wants to find nearby medical facilities.
+Provide health advice for their symptom. Keep it brief and practical.
+
+Response structure:
+Start with one warm sentence acknowledging their symptom.
+Give 2 or 3 home-care steps as a bulleted list using • bullets.
+End with one sentence recommending they visit a nearby doctor or clinic.
+
+Never diagnose. Never name drug brands or dosages. Keep under 90 words.
+Do not apologize about finding facilities — that part is working correctly.\
 """
