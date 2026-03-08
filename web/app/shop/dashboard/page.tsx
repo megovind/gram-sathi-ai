@@ -6,6 +6,7 @@ import { ArrowLeft, RefreshCw, TrendingUp, Package, Clock, BadgeCheck } from 'lu
 import { getShopAnalytics, getShopOrders } from '@/lib/api'
 import { store } from '@/lib/store'
 import { cn } from '@/lib/utils'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 
 interface Analytics {
   today:   { revenue: number; orderCount: number }
@@ -22,6 +23,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function ShopDashboardPage() {
   const router  = useRouter()
+  useAuthGuard()
   const [shopId, setShopId]       = useState<string | null>(null)
   const [mounted, setMounted]     = useState(false)
   const [analytics, setAnalytics] = useState<Analytics | null>(null)

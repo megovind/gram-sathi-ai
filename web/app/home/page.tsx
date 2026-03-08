@@ -12,9 +12,11 @@ import { cn } from '@/lib/utils'
 import { LanguageModal } from '@/components/LanguageModal'
 import { getStrings } from '@/lib/strings'
 import type { Language } from '@/lib/types'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 
 export default function HomePage() {
   const router = useRouter()
+  useAuthGuard()
   const [showSettings, setShowSettings] = useState(false)
   const [showLang, setShowLang]         = useState(false)
   const [shopId, setShopId]             = useState<string | null>(null)

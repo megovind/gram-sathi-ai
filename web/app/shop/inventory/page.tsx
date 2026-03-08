@@ -6,6 +6,7 @@ import { ArrowLeft, Plus, Trash2, Loader2 } from 'lucide-react'
 import { updateInventory } from '@/lib/api'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 
 interface StagedItem {
   name: string; nameHindi: string; price: string; unit: string; stockQty: string
@@ -23,6 +24,7 @@ export default function InventoryPage() {
 
 function InventoryPageInner() {
   const router  = useRouter()
+  useAuthGuard()
   const params  = useSearchParams()
   const shopId  = params.get('shopId') ?? ''
   const [form, setForm]     = useState<StagedItem>({ ...EMPTY })

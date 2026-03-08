@@ -6,6 +6,7 @@ import { ArrowLeft, Loader2, CheckCircle, ShoppingCart } from 'lucide-react'
 import { getShop, placeOrder, type ShopItem } from '@/lib/api'
 import type { CartItem } from '@/lib/types'
 import { toast } from 'sonner'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 
 export default function OrderPage() {
   return (
@@ -17,6 +18,7 @@ export default function OrderPage() {
 
 function OrderPageInner() {
   const router     = useRouter()
+  useAuthGuard()
   const params     = useSearchParams()
   const shopId     = params.get('shopId') ?? ''
   const [shop, setShop]     = useState<ShopItem | null>(null)

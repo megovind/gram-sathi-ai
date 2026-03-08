@@ -4,30 +4,33 @@ GramSathi LangGraph agent graph.
 Flow:
   START → classify → (conditional) → health_advice
                                     → nearby_facilities
+                                    → health_and_nearby
                                     → shops
                        each → END
 
 classify
-  Fast keyword pre-filter handles ~90% of queries without Bedrock.
-  Ambiguous queries fall through to a lightweight Bedrock classification call.
-  For nearby_facilities / shops intents, Bedrock also extracts the specific
-  location name from the query ("Aklera", "Jaipur", etc.) or returns None
-  meaning "use the user's GPS / pincode instead".
+  Single Bedrock call using the CLASSIFIER_SYSTEM prompt (prompts.py).
+  Returns structured JSON: {intent, kind, location}.
+  No regex — works for any Indian language, dialect, or colloquial phrasing.
 
 health_advice
-  Delegates to BedrockService.chat() with conversation history support.
+  Bedrock chat with HEALTH_ADVISOR_EXTRA system prompt + conversation history.
+
+health_and_nearby
+  Bedrock chat with HEALTH_AND_NEARBY_EXTRA prompt for the health part,
+  then Google Places for the facility cards.
 
 nearby_facilities / shops
-  Use the LLM-extracted location to build a clean, structured Google Places
-  query.  If no location was extracted, fall back to GPS coordinates (10–50 km
-  radius) or pincode-anchored text search.  If nothing is available, reply
-  asking the user to share their location.
+  Use LLM-extracted location to build a clean Google Places query.
+  Falls back to GPS / pincode if no location was named.
 """
+import json
 import re
 from typing import List, Literal, Optional, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from src.prompts import CLASSIFIER_SYSTEM, HEALTH_ADVISOR_EXTRA, HEALTH_AND_NEARBY_EXTRA
 from src.services.bedrock_service import bedrock, detect_red_flags_fast
 from src.services.database import db
 from src.services.google_places_service import google_places
@@ -57,36 +60,91 @@ class QueryState(TypedDict):
     intent: str               # 'health_advice' | 'nearby_facilities' | 'shops'
     nearby_kind: str          # 'clinic' | 'pharmacy' | 'hospital' | 'facilities' | ''
     extracted_location: Optional[str]  # LLM-extracted city/place, None = use GPS/pincode
-    reply: str
+    reply: str                # displayed as text in the chat bubble
+    tts_text: str             # spoken via Polly; may differ from reply (e.g. nearby TTS)
     facilities: List[dict]
 
 
-# ── Fast intent classification (keyword-only, no LLM) ─────────────────────────
+# ── Numbered-list normaliser ──────────────────────────────────────────────────
+#
+# Handles all common LLM number formats:
+#   "3. text"   "3.text"   "**3.**"   "**3.** text"   "3) text"
+# Strips any markdown bold markers (* or **) around the number.
+#
+_NUMBERED_LINE_RE = re.compile(
+    r"^(\s*)"          # optional leading whitespace
+    r"\*{0,2}"         # optional markdown bold open  (**  or *)
+    r"(\d+)"           # the number
+    r"[\.\)]\s*"       # period or paren + optional space
+    r"\*{0,2}"         # optional markdown bold close
+    r"\s*(.*)",        # rest of line content (may be empty)
+    re.DOTALL,
+)
 
-_FACILITY_RE = re.compile(
-    r"\b(clinic|clinics|pharmacy|pharmacies|hospital|hospitals|"
-    r"doctor|doctors|dispensary|medical\s+cent|health\s+cent|"
-    r"क्लीनिक|फार्मेसी|अस्पताल|दवाखाना|डॉक्टर|दवाई|दवाखाने)\b",
-    re.IGNORECASE,
-)
-_SHOP_RE = re.compile(
-    r"\b(shop|shops|store|stores|grocery|groceries|kirana|market|supermarket|"
-    r"दुकान|दुकानें|बाजार|किराना|राशन)\b",
-    re.IGNORECASE,
-)
-_LOCATION_RE = re.compile(
-    r"\b(nearby|near|in|at|around|close|find|search|locate|show|list|get|"
-    r"give|tell|where|which|any|some|want|need|suggest|recommend|"
-    r"नजदीक|पास|में|के पास|पर|ढूंढो|खोजो|बताओ|दिखाओ|कहाँ|कोई)\b",
-    re.IGNORECASE,
-)
-_KIND_MAP = [
-    ("pharmacy", re.compile(r"\b(pharmacy|pharmacies|फार्मेसी|दवाखाना|दवाई)\b", re.IGNORECASE)),
-    ("hospital", re.compile(r"\b(hospital|hospitals|अस्पताल)\b", re.IGNORECASE)),
-    ("clinic",   re.compile(r"\b(clinic|clinics|doctor|doctors|dispensary|क्लीनिक|डॉक्टर)\b", re.IGNORECASE)),
-]
+def _clean_reply(text: str) -> str:
+    """
+    Strip lines where the LLM accidentally wrote meta-commentary about the UI
+    (e.g. "(facility cards are displayed)", "निम्नलिखित स्वास्थ्य सुविधाएं...").
+    These appear when the prompt mentions "cards will be shown below".
+    """
+    _meta_patterns = re.compile(
+        r"("
+        r"\(.*?(card|कार्ड|suvidhae|सुविधा|facilit|display|प्रदर्शित).*?\)"  # parenthesised stage directions
+        r"|निम्नलिखित\s+स्वास्थ्य\s+सुविधाएं"                                # "following health facilities"
+        r"|following\s+(health\s+)?facilit"                                   # English equivalent
+        r"|यहाँ\s+(निकटतम|पास\s+की)\s+सुविधाएं"                              # "here are the nearest facilities"
+        r")",
+        re.IGNORECASE | re.UNICODE,
+    )
+    cleaned_lines = []
+    for line in text.split("\n"):
+        if _meta_patterns.search(line):
+            continue   # drop the whole line
+        cleaned_lines.append(line)
+    # Remove leading/trailing blank lines introduced by dropped lines
+    result = "\n".join(cleaned_lines)
+    return re.sub(r"\n{3,}", "\n\n", result).strip()
 
-# Human-readable search term per kind — used to build clean Google queries
+
+def _renumber(text: str) -> str:
+    """
+    Renumber any ordered list in an LLM response so it always starts at 1.
+    Handles plain numbers ("3."), bold numbers ("**3.**"), and numbers
+    on their own line (number + content on next line).
+    Only renumbers when the first detected list number is > 1.
+    """
+    lines = text.split("\n")
+
+    first_num: Optional[int] = None
+    for line in lines:
+        m = _NUMBERED_LINE_RE.match(line)
+        if m:
+            first_num = int(m.group(2))
+            break
+
+    if first_num is None or first_num == 1:
+        return text   # already correct or no numbered list found
+
+    counter = 0
+    result = []
+    for line in lines:
+        m = _NUMBERED_LINE_RE.match(line)
+        if m:
+            counter += 1
+            prefix   = m.group(1)  # leading whitespace
+            content  = m.group(3)  # text after the number (may be empty)
+            # Reconstruct as clean "N." — strip any markdown bold from number
+            rebuilt = f"{prefix}{counter}."
+            if content:
+                rebuilt += f" {content}"
+            result.append(rebuilt)
+        else:
+            result.append(line)
+    return "\n".join(result)
+
+
+# ── Human-readable search terms for Google Places ─────────────────────────────
+
 _KIND_SEARCH_TERM = {
     "clinic":     "clinics and doctors",
     "pharmacy":   "pharmacies",
@@ -95,99 +153,60 @@ _KIND_SEARCH_TERM = {
     "shops":      "shops and stores",
 }
 
+_VALID_INTENTS = frozenset(
+    ("health_advice", "nearby_facilities", "health_and_nearby", "shops", "general")
+)
+_VALID_KINDS = frozenset(
+    ("clinic", "hospital", "pharmacy", "facilities", "shops", "")
+)
 
-def _fast_classify(text: str) -> tuple[str, str]:
+
+# ── LLM classifier (single call, structured JSON output) ──────────────────────
+
+def _llm_classify_all(text: str) -> tuple[str, str, Optional[str]]:
     """
-    Returns (intent, nearby_kind) using keyword matching only.
-    Returns ('', '') when the query is ambiguous and needs LLM classification.
+    One Bedrock call that returns (intent, kind, extracted_location).
+
+    Uses the CLASSIFIER_SYSTEM prompt (prompts.py) — no regex, no separate
+    location-extraction call. Works for any Indian language or Hinglish phrasing.
+    Falls back to ('health_advice', '', None) on any parse error.
     """
-    has_facility = bool(_FACILITY_RE.search(text))
-    has_shop     = bool(_SHOP_RE.search(text))
-    has_location = bool(_LOCATION_RE.search(text))
-
-    if has_facility and has_location:
-        kind = next((k for k, p in _KIND_MAP if p.search(text)), "facilities")
-        return "nearby_facilities", kind
-
-    if has_shop and has_location:
-        return "shops", ""
-
-    return "", ""   # ambiguous — fall through to Bedrock
-
-
-# ── LLM helpers ───────────────────────────────────────────────────────────────
-
-def _llm_classify(text: str) -> tuple[str, str]:
-    """Bedrock fallback for ambiguous queries (rare)."""
-    prompt = (
-        "Classify this user query into one of three categories:\n"
-        "- nearby_facilities: user wants to FIND or LOCATE clinics, doctors, hospitals, pharmacies\n"
-        "  (e.g. 'clinics', 'show me doctors', 'any pharmacy', 'hospitals near me')\n"
-        "- shops: user wants to find local shops, groceries, kirana stores\n"
-        "- health_advice: user describes symptoms, asks about a disease, or wants medical guidance\n"
-        "  (e.g. 'I have a fever', 'what is diabetes', 'my head hurts')\n\n"
-        "When in doubt between nearby_facilities and health_advice, prefer nearby_facilities "
-        "if the query contains only facility-type words (clinic, doctor, hospital, pharmacy).\n\n"
-        f'Query: "{text}"\n\n'
-        'Reply with ONLY one word: nearby_facilities, shops, or health_advice'
-    )
     try:
-        raw    = bedrock.chat(prompt, language="en").strip().lower()
-        intent = raw if raw in ("nearby_facilities", "shops", "health_advice") else "health_advice"
-    except Exception:
-        intent = "health_advice"
-    return intent, ""
+        raw = bedrock.structured_call(
+            system_prompt=CLASSIFIER_SYSTEM,
+            user_message=f'Query: "{text}"',
+            max_tokens=128,
+        ).strip()
 
+        # Strip any accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
 
-def _llm_extract_location(text: str) -> Optional[str]:
-    """
-    Use Bedrock to extract a specific city / town / area name from the query.
+        data     = json.loads(raw)
+        intent   = data.get("intent", "health_advice").strip().lower()
+        kind     = data.get("kind", "").strip().lower()
+        location = data.get("location")
 
-    Returns the place name (e.g. "Aklera", "Jaipur") or None when the user
-    did not specify a location (e.g. "nearby clinics", "shops near me").
+        if intent not in _VALID_INTENTS:
+            intent = "health_advice"
+        if kind not in _VALID_KINDS:
+            kind = "facilities"
+        if location and (not isinstance(location, str) or location.upper() == "NULL"):
+            location = None
 
-    This replaces brittle regex matching and works across all Indian languages,
-    Hinglish, and varied phrasings:
-      "shops in Aklera"           → "Aklera"
-      "Aklera ke shops"           → "Aklera"
-      "shops near Jaipur"         → "Jaipur"
-      "जयपुर में अस्पताल"          → "Jaipur"
-      "nearby clinics"            → None
-      "मेरे पास दुकान"             → None
-    """
-    prompt = (
-        f'User query: "{text}"\n\n'
-        "Task: Extract the specific location name (city, town, or area) mentioned in this query.\n"
-        "Rules:\n"
-        "- If a specific place is named (e.g. Aklera, Delhi, Kota, Jaipur, Mumbai), "
-        "reply with ONLY that place name in English.\n"
-        "- If the query asks for 'nearby', 'near me', 'आसपास', 'पास में', or gives no specific place, "
-        "reply with exactly: NONE\n"
-        "- Do NOT include extra words. Reply with ONLY the place name or NONE."
-    )
-    try:
-        raw     = bedrock.chat(prompt, language="en").strip()
-        cleaned = raw.strip('"\'.,!? ').strip()
-        if not cleaned or cleaned.upper() == "NONE":
-            return None
-        return cleaned
+        return intent, kind, location or None
+
     except Exception as exc:
-        logger.warning("llm_extract_location_failed", error=str(exc))
-        return None   # gracefully fall back to GPS / pincode
+        logger.warning("llm_classify_all_failed", error=str(exc), text=text[:60])
+        return "health_advice", "", None
 
 
 # ── Graph nodes ───────────────────────────────────────────────────────────────
 
 def classify_node(state: QueryState) -> dict:
-    intent, nearby_kind = _fast_classify(state["text"])
-    if not intent:
-        intent, nearby_kind = _llm_classify(state["text"])
-
-    # For location-based intents, ask the LLM to extract the specific place name.
-    # This is far more robust than regex — handles any language, phrasing, or order.
-    extracted_location: Optional[str] = None
-    if intent in ("nearby_facilities", "shops"):
-        extracted_location = _llm_extract_location(state["text"])
+    intent, nearby_kind, extracted_location = _llm_classify_all(state["text"])
 
     logger.info(
         "agent_classified",
@@ -210,21 +229,26 @@ def health_advice_node(state: QueryState) -> dict:
             state["language"], MSG_EMERGENCY_RESPONSE_BY_LANG["en"]
         )
     else:
+        # Combine the focused health advisor prompt with any handler-supplied extras
+        combined_extra = HEALTH_ADVISOR_EXTRA
+        if state.get("system_extra"):
+            combined_extra = f"{HEALTH_ADVISOR_EXTRA}\n{state['system_extra']}"
         try:
             reply = bedrock.chat(
                 text,
                 conversation_history=state["conversation_history"],
-                system_extra=state["system_extra"],
+                system_extra=combined_extra,
                 use_cache=state["use_cache"],
                 language=state["language"],
             )
         except Exception as exc:
             logger.error("health_advice_bedrock_failed", error=str(exc))
             reply = _err_reply(state["language"])
-    return {"reply": reply, "facilities": []}
+    return {"reply": reply, "tts_text": reply, "facilities": []}
 
 
 def nearby_facilities_node(state: QueryState) -> dict:
+    """Pure location search — no health complaint in the query."""
     kind               = state["nearby_kind"] or "facilities"
     lang               = state["language"]
     lat                = state.get("lat")
@@ -232,35 +256,63 @@ def nearby_facilities_node(state: QueryState) -> dict:
     pincode            = state.get("pincode") or None
     extracted_location = state.get("extracted_location")
 
-    if extracted_location:
-        # LLM confirmed a specific location → build a clean, precise Google query
-        kind_term   = _KIND_SEARCH_TERM.get(kind, kind)
-        clean_query = f"{kind_term} in {extracted_location}, India"
-        logger.info("nearby_facilities_named_location", location=extracted_location, kind=kind)
-        results = google_places.search_facilities(
-            query=clean_query,
-            kind=kind,
-            lat=None, lon=None,          # ignore GPS — user specified a place
-            max_results=MAX_NEARBY_FACILITIES,
-            force_text_search=True,
-        )
-    elif lat is not None or lon is not None or pincode:
-        # No named location → search near user's current position
-        results = google_places.search_facilities(
-            query=f"{_KIND_SEARCH_TERM.get(kind, kind)}, India",
-            kind=kind,
-            lat=lat,
-            lon=lon,
-            max_results=MAX_NEARBY_FACILITIES,
-            force_text_search=False,
-            pincode=pincode,
-        )
-    else:
-        return {"reply": _no_location_reply(lang), "facilities": []}
+    results = _fetch_facilities(kind, extracted_location, lat, lon, pincode)
+    if results is None:
+        msg = _no_location_reply(lang)
+        return {"reply": msg, "tts_text": msg, "facilities": []}
 
     logger.info("nearby_facilities_searched", kind=kind, count=len(results))
-    reply = _format_tts(results, kind, lang)
-    return {"reply": reply, "facilities": results}
+    # reply is empty so the TTS text never renders as visible bubble text.
+    # tts_text is passed to Polly so the user still hears the facility names read out.
+    tts = _format_tts(results, kind, lang)
+    return {"reply": "", "tts_text": tts, "facilities": results}
+
+
+def health_and_nearby_node(state: QueryState) -> dict:
+    """
+    User expressed a health problem AND wants a nearby facility.
+    Runs two agents in sequence:
+      1. Bedrock → dynamic health advice for the specific complaint
+      2. Google Places → real nearby facilities
+    Returns the advice as reply text and the places as the facilities array.
+    The frontend renders both: advice bubble + facility cards below.
+    """
+    text               = state["text"]
+    lang               = state["language"]
+    kind               = state["nearby_kind"] or "facilities"
+    lat                = state.get("lat")
+    lon                = state.get("lon")
+    pincode            = state.get("pincode") or None
+    extracted_location = state.get("extracted_location")
+
+    # ── Agent 1: Health advice via Bedrock ────────────────────────────────────
+    if detect_red_flags_fast(text):
+        health_reply = MSG_EMERGENCY_RESPONSE_BY_LANG.get(
+            lang, MSG_EMERGENCY_RESPONSE_BY_LANG["en"]
+        )
+    else:
+        # Use the health+nearby prompt so the model knows cards follow
+        combined_extra = HEALTH_AND_NEARBY_EXTRA
+        if state.get("system_extra"):
+            combined_extra = f"{HEALTH_AND_NEARBY_EXTRA}\n{state['system_extra']}"
+        try:
+            health_reply = bedrock.chat(
+                text,
+                conversation_history=state["conversation_history"],
+                system_extra=combined_extra,
+                use_cache=state["use_cache"],
+                language=lang,
+            )
+        except Exception as exc:
+            logger.error("health_and_nearby_bedrock_failed", error=str(exc))
+            health_reply = _err_reply(lang)
+    # ── Agent 2: Nearby facilities via Google Places ──────────────────────────
+    results = _fetch_facilities(kind, extracted_location, lat, lon, pincode)
+    if results is None:
+        results = []   # no location — health advice still shown; no cards
+
+    logger.info("health_and_nearby_done", kind=kind, count=len(results))
+    return {"reply": health_reply, "tts_text": health_reply, "facilities": results}
 
 
 def shops_node(state: QueryState) -> dict:
@@ -306,13 +358,49 @@ def shops_node(state: QueryState) -> dict:
             )
 
     logger.info("shops_searched", location=extracted_location, count=len(shops))
-    reply = _format_tts(shops, "shops", lang)
-    return {"reply": reply, "facilities": shops}
+    tts = _format_tts(shops, "shops", lang)
+    return {"reply": "", "tts_text": tts, "facilities": shops}
 
 
-def _route(state: QueryState) -> Literal["health_advice", "nearby_facilities", "shops"]:
+def _fetch_facilities(
+    kind: str,
+    extracted_location: Optional[str],
+    lat: Optional[float],
+    lon: Optional[float],
+    pincode: Optional[str],
+) -> Optional[list]:
+    """
+    Shared facility-fetching logic used by both nearby_facilities_node and
+    health_and_nearby_node. Returns a list of place dicts, or None when no
+    location data is available at all.
+    """
+    if extracted_location:
+        kind_term   = _KIND_SEARCH_TERM.get(kind, kind)
+        clean_query = f"{kind_term} in {extracted_location}, India"
+        logger.info("fetch_facilities_named_location", location=extracted_location, kind=kind)
+        return google_places.search_facilities(
+            query=clean_query,
+            kind=kind,
+            lat=None, lon=None,
+            max_results=MAX_NEARBY_FACILITIES,
+            force_text_search=True,
+        )
+    if lat is not None or lon is not None or pincode:
+        return google_places.search_facilities(
+            query=f"{_KIND_SEARCH_TERM.get(kind, kind)}, India",
+            kind=kind,
+            lat=lat,
+            lon=lon,
+            max_results=MAX_NEARBY_FACILITIES,
+            force_text_search=False,
+            pincode=pincode,
+        )
+    return None   # caller decides how to handle the no-location case
+
+
+def _route(state: QueryState) -> Literal["health_advice", "nearby_facilities", "shops", "health_and_nearby"]:
     intent = state.get("intent", "health_advice")
-    if intent in ("nearby_facilities", "shops"):
+    if intent in ("nearby_facilities", "shops", "health_and_nearby"):
         return intent
     return "health_advice"
 
@@ -373,6 +461,7 @@ def _format_tts(items: List[dict], kind: str, language: str) -> str:
     return "".join(parts)
 
 
+
 def _err_reply(language: str) -> str:
     return (
         "माफ करें, अभी जानकारी उपलब्ध नहीं है। कृपया दोबारा कोशिश करें।"
@@ -401,12 +490,14 @@ _builder = StateGraph(QueryState)
 _builder.add_node("classify",          classify_node)
 _builder.add_node("health_advice",     health_advice_node)
 _builder.add_node("nearby_facilities", nearby_facilities_node)
+_builder.add_node("health_and_nearby", health_and_nearby_node)
 _builder.add_node("shops",             shops_node)
 
 _builder.add_edge(START, "classify")
 _builder.add_conditional_edges("classify", _route)
 _builder.add_edge("health_advice",     END)
 _builder.add_edge("nearby_facilities", END)
+_builder.add_edge("health_and_nearby", END)
 _builder.add_edge("shops",             END)
 
 agent_graph = _builder.compile()

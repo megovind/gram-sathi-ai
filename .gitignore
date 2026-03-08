@@ -36,6 +36,7 @@ backend/.serverless/
 backend/node_modules/
 web/node_modules/
 web/.next/
+web/out/
 
 # macOS
 .DS_Store

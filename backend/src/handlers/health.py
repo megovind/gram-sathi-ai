@@ -46,10 +46,10 @@ _HEALTH_DISCLAIMER = {
 def _health_system_extra(language: str) -> str:
     disclaimer = _HEALTH_DISCLAIMER.get(language, _HEALTH_DISCLAIMER["en"])
     return (
-        "You are handling a HEALTH query.\n"
-        "- Provide safe home-care advice and when to see a doctor.\n"
-        "- NEVER diagnose.\n"
-        f'- Always end with: "{disclaimer}"'
+        "You are handling a HEALTH query. "
+        "Provide safe home-care advice and indicate when to see a doctor. "
+        "Never diagnose. "
+        f'Always end your response with exactly this sentence: "{disclaimer}"'
     )
 
 
@@ -149,18 +149,29 @@ def _handle_query_impl(event: dict, user_id: str) -> dict:
         "nearby_kind":        "",
         "extracted_location": None,
         "reply":              "",
+        "tts_text":           "",
         "facilities":         [],
     })
     # ─────────────────────────────────────────────────────────────────────────
 
     reply_text: str = result["reply"]
+    # tts_text may differ from reply (e.g. nearby queries: reply="" but tts has facility names)
+    tts_text: str = result.get("tts_text") or reply_text
+    
+    # Post-process health advice replies (cached or fresh) to strip meta-commentary
+    if reply_text:
+        from src.agents.graph import _clean_reply
+        reply_text = _clean_reply(reply_text)
+        if tts_text == result["reply"]:  # tts_text wasn't separately set
+            tts_text = reply_text
     facilities: list = result.get("facilities") or []
     nearby_kind: str = result.get("nearby_kind") or ""
     intent: str = result.get("intent") or "health_advice"
+    # health_and_nearby contains real health advice — save it to conversation history
     is_search: bool = intent in ("nearby_facilities", "shops")
 
     try:
-        audio_url = polly.synthesize(reply_text, language, low_bandwidth=low_bandwidth)
+        audio_url = polly.synthesize(tts_text, language, low_bandwidth=low_bandwidth)
     except Exception:
         audio_url = None
 

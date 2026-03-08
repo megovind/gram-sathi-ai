@@ -10,12 +10,9 @@ from src.utils.config import config
 
 # Trimmed system prompt — shorter = fewer input tokens per call
 SYSTEM_PROMPT_BASE = """You are GramSathi, a helpful AI assistant for rural India.
-Help with: basic healthcare guidance (non-diagnostic) and local commerce.
-
-RULES:
-- NEVER diagnose. Recommend a doctor for serious conditions.
-- Be concise. Use simple language.
-- If intent is unclear, ask one short clarifying question.
+Help with basic healthcare guidance (non-diagnostic) and local commerce.
+Never diagnose. Recommend a doctor for serious conditions.
+Be concise and use simple language. If intent is unclear, ask one short clarifying question.
 """
 
 # Explicit language instruction so AI replies in the selected language
@@ -94,9 +91,12 @@ def _classify_intent_fast(text: str) -> str:
     return ""
 
 
+# Increment this when prompts change significantly to invalidate old cached responses
+_CACHE_VERSION = "v2"
+
 def _cache_key(text: str, language: str) -> str:
     normalized = re.sub(r"\s+", " ", text.lower().strip())
-    return hashlib.sha256(f"{language}:{normalized}".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"{_CACHE_VERSION}:{language}:{normalized}".encode()).hexdigest()[:32]
 
 
 class BedrockService:
@@ -162,6 +162,34 @@ class BedrockService:
             db.set_response_cache(cache_key, reply, language)
 
         return reply
+
+    def structured_call(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int = 256,
+    ) -> str:
+        """
+        Raw Bedrock call with a fully custom system prompt.
+
+        Used for structured outputs (JSON classification, extraction) where
+        the GramSathi base prompt would interfere with the desired output format.
+        No conversation history, no language instruction, no caching.
+        """
+        body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        response = self._client.invoke_model(
+            modelId=config.BEDROCK_MODEL_ID,
+            contentType="application/json",
+            accept="application/json",
+            body=json.dumps(body),
+        )
+        result = json.loads(response["body"].read())
+        return result["content"][0]["text"]
 
     def classify_intent(self, text: str) -> str:
         """

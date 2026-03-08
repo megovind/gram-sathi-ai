@@ -96,34 +96,151 @@ See **[docs/deployment.md](docs/deployment.md)** for full production deployment 
 
 ## Architecture Overview
 
+![GramSathi Architecture](docs/architecture.png)
+
+<details>
+<summary>View as Mermaid source</summary>
+
+```mermaid
+graph TD
+    subgraph Clients["Clients"]
+        WEB["🌐 Web App\nNext.js 15 · TypeScript\nAWS Amplify"]
+        FLUTTER["📱 Flutter App\nDart · Android / iOS"]
+        WA["💬 WhatsApp\nMeta Business API"]
+    end
+
+    APIGW["AWS API Gateway\nREST · ap-south-1"]
+
+    subgraph LambdaLayer["AWS Lambda  ·  Python 3.12"]
+        AUTH["🔐 JWT Auth\nHS256 Middleware"]
+
+        subgraph Handlers["HTTP Handlers"]
+            H_USER["user.py\nPOST /user\nGET /user/:id"]
+            H_HEALTH["health.py\nPOST /health/query\nPOST /health/nearby"]
+            H_CHAT["chat.py\nPOST /chat"]
+            H_COMMERCE["commerce.py\nPOST /commerce/shops\nPOST /commerce/order"]
+            H_SHOP["shop_owner.py\nPOST /shop\nPOST /shop/:id/inventory"]
+            H_WEBHOOK["webhook.py\nGET+POST /webhook/whatsapp"]
+        end
+
+        subgraph AgentGraph["LangGraph Agent  ·  graph.py"]
+            direction TB
+            CLASSIFY["classify_node\nFast keyword pre-filter\n+ LLM intent classification\n+ LLM location extraction"]
+            HEALTH_N["health_node\nRed-flag keyword scan\nBedrock symptom guidance\n4-turn conversation context"]
+            NEARBY_N["nearby_node\nNamed location → text search\nGPS → radius ladder 10→20→50 km\nPincode → anchored text search"]
+            SHOPS_N["shops_node\nNamed location → Places text search\nDynamoDB pincode lookup\nPlaces API fallback"]
+            GENERAL_N["general_node\nGeneral rural Q&A\nAgriculture · Schemes"]
+        end
+    end
+
+    subgraph AIServices["AWS AI  ·  Speech"]
+        BEDROCK["🤖 Amazon Bedrock\nClaude 3 Haiku\nIntent · Guidance\nLocation extraction"]
+        TRANSCRIBE["🎙️ Amazon Transcribe\nSpeech → Text\nMultilingual STT"]
+        POLLY["🔊 Amazon Polly\nText → Speech\nMP3 · OGG Vorbis"]
+    end
+
+    subgraph DataLayer["Data  ·  Storage"]
+        DYNAMO["🗄️ Amazon DynamoDB\nusers · conversations\nshops · orders\nresponse-cache · geo-cache"]
+        S3["📦 Amazon S3\nAudio uploads · Polly output\nPresigned URLs · 1h expiry"]
+    end
+
+    subgraph OpsLayer["Operations"]
+        SNS["📲 Amazon SNS\nSMS · Shop owner alerts\nOrder notifications"]
+        CW["📊 Amazon CloudWatch\nStructured JSON logs\nLambda metrics"]
+        AMPLIFY["⚡ AWS Amplify\nWeb hosting\nCI/CD from Git"]
+    end
+
+    GPLACES["📍 Google Places API New\nNearby search\nText search · India"]
+
+    WEB -->|HTTPS REST| APIGW
+    FLUTTER -->|HTTPS REST| APIGW
+    WA -->|Webhook| APIGW
+    WEB -.->|Hosted on| AMPLIFY
+
+    APIGW --> AUTH
+    AUTH --> H_USER
+    AUTH --> H_HEALTH
+    AUTH --> H_CHAT
+    AUTH --> H_COMMERCE
+    AUTH --> H_SHOP
+    AUTH --> H_WEBHOOK
+
+    H_HEALTH --> CLASSIFY
+    H_CHAT --> CLASSIFY
+    H_WEBHOOK --> CLASSIFY
+
+    CLASSIFY -->|health_query| HEALTH_N
+    CLASSIFY -->|nearby_facilities| NEARBY_N
+    CLASSIFY -->|shops| SHOPS_N
+    CLASSIFY -->|general| GENERAL_N
+
+    CLASSIFY -->|ambiguous classify + location extract| BEDROCK
+    HEALTH_N -->|guidance prompt + history| BEDROCK
+    GENERAL_N -->|Q&A prompt| BEDROCK
+
+    NEARBY_N -->|nearby or text search| GPLACES
+    SHOPS_N -->|named location search| GPLACES
+
+    H_HEALTH -->|presigned upload URL| S3
+    H_HEALTH -->|STT job with S3 key| TRANSCRIBE
+    TRANSCRIBE -.->|reads audio from| S3
+    HEALTH_N -->|synthesise reply| POLLY
+    GENERAL_N -->|synthesise reply| POLLY
+    POLLY -.->|stores MP3/OGG| S3
+
+    H_USER --> DYNAMO
+    H_HEALTH -->|load/save history| DYNAMO
+    H_COMMERCE --> DYNAMO
+    H_SHOP --> DYNAMO
+    SHOPS_N -->|pincode lookup| DYNAMO
+    HEALTH_N -.->|24h response cache| DYNAMO
+
+    H_COMMERCE -->|new order alert| SNS
+    H_SHOP -->|order update| SNS
+
+    LambdaLayer -.->|structured logs| CW
 ```
-User (Web / Flutter / WhatsApp)
-        │
-        ▼
-  API Gateway (REST)
-        │
-        ▼
-  AWS Lambda (Python 3.12)
-    ├── Auth middleware (JWT)
-    ├── LangGraph Agent
-    │     ├── classify_node  →  Intent classification (Bedrock)
-    │     │                     + LLM location extraction
-    │     ├── health_node    →  Symptom guidance + red-flag detection
-    │     ├── nearby_node    →  Google Places API (GPS ladder: 10→20→50 km)
-    │     ├── shops_node     →  DynamoDB shop lookup → Google Places fallback
-    │     └── general_node   →  General rural queries
-    ├── Amazon Transcribe   (audio → text)
-    └── Amazon Polly        (text → audio)
-        │
-        ▼
-  DynamoDB  ·  S3  ·  SNS
-```
+
+</details>
+
+> Solid arrows = primary data flow · Dashed arrows = async / side-effect flows
 
 **Location resolution priority:**
 1. LLM-extracted location from query (e.g. "clinics in Aklera" → searches Aklera)
 2. GPS coordinates from the device/browser (radius ladder: 10 km → 20 km → 50 km)
 3. Stored user pincode (text search anchored to pincode)
 4. Prompt user for location if none available
+
+---
+
+## Performance
+
+### Latency Benchmarks (Prototype)
+
+| Component | Typical Latency | Notes |
+|---|---|---|
+| API Gateway + Lambda cold start | ~200 – 400 ms | Warm invocations ~50 ms |
+| Bedrock — Claude 3 Haiku | ~1 – 2 sec | Health guidance, intent classification |
+| Amazon Transcribe (short audio) | ~2 – 4 sec | 5–15 second voice clips |
+| Amazon Polly (TTS synthesis) | ~300 – 600 ms | MP3 · included in AI response time |
+| Google Places API lookup | ~300 – 800 ms | Nearby + text search |
+| DynamoDB read / write | < 10 ms | Single-item get/put |
+| **End-to-end AI response (text)** | **~1.8 – 3.5 sec** | Gateway → Lambda → Bedrock → Polly |
+| **End-to-end voice query** | **~4 – 8 sec** | Upload → Transcribe → Bedrock → Polly |
+
+### Scalability
+
+- **Serverless-first** — Lambda scales to thousands of concurrent requests automatically with no infrastructure management
+- **DynamoDB on-demand** — capacity scales with traffic; consistent single-digit millisecond reads
+- **Stateless processing** — no session state in Lambda; all context stored in DynamoDB per conversation
+- **Response caching** — repeated AI queries served from DynamoDB cache (24 h TTL), bypassing Bedrock entirely
+
+### Low-Bandwidth Optimisations
+
+- Audio responses generated **only when requested** (skipped for low-connectivity clients)
+- **OGG Vorbis** format available as a smaller alternative to MP3 (Polly low-bandwidth mode)
+- Text-first responses always returned alongside audio so the UI is usable without audio playback
+- Presigned S3 URLs used for direct client ↔ S3 transfers, keeping Lambda outside the audio data path
 
 ---
 

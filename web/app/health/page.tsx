@@ -12,14 +12,19 @@ import { healthQuery, getAudioUploadUrl, uploadAudioToS3 } from '@/lib/api'
 import { getStrings } from '@/lib/strings'
 import type { Facility, Message, NearbyKind } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 
 let msgId = 0
 const nextId = () => String(++msgId)
 
 export default function HealthPage() {
   const router  = useRouter()
+  useAuthGuard()
   const audio   = useAudio()
-  const t = getStrings(store.getLanguage())
+  // Read language from localStorage only after hydration to avoid SSR mismatch
+  const [lang, setLang] = useState('hi')
+  useEffect(() => { setLang(store.getLanguage()) }, [])
+  const t = getStrings(lang)
   const [messages, setMessages]   = useState<Message[]>([])
   const [input, setInput]         = useState('')
   const [loading, setLoading]     = useState(false)
@@ -79,10 +84,14 @@ export default function HealthPage() {
       if (res.conversationId) setConvId(res.conversationId)
       if (res.isEmergency)    setEmergency(true)
 
-      // If the audio message had no text yet, update user bubble with transcription
-      if (audioS3Key && res.userText) {
+      // Always clear the uploading state — show transcription if returned, else a voice label
+      if (audioS3Key) {
         setMessages(prev =>
-          prev.map(m => m.id === userMsg.id ? { ...m, content: res.userText!, isUploading: false } : m)
+          prev.map(m =>
+            m.id === userMsg.id
+              ? { ...m, content: res.userText || m.content, isUploading: false }
+              : m,
+          )
         )
       }
 
@@ -196,7 +205,7 @@ export default function HealthPage() {
       <div ref={listRef} className="flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-4 py-4 space-y-3">
           {isEmpty && (
-            <EmptyState onSuggestion={t => sendMessage(t)} />
+            <EmptyState lang={lang} onSuggestion={t => sendMessage(t)} />
           )}
           {messages.map(m => <MessageBubble key={m.id} message={m} />)}
           {loading && <TypingIndicator />}
@@ -212,7 +221,7 @@ export default function HealthPage() {
             onStop={handleVoiceStop}
             disabled={loading}
           />
-          <div className="flex flex-1 items-end gap-2 rounded-2xl bg-surface-variant px-3 py-2">
+          <div className="flex flex-1 items-center gap-2 rounded-2xl bg-surface-variant px-3 py-2">
             <textarea
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -225,7 +234,7 @@ export default function HealthPage() {
               placeholder={t.typeMessage}
               rows={1}
               maxLength={1000}
-              className="flex-1 resize-none bg-transparent text-sm text-textPrimary placeholder:text-textHint outline-none max-h-24"
+              className="flex-1 resize-none bg-transparent text-sm leading-5 py-0 text-textPrimary placeholder:text-textHint outline-none max-h-24"
               style={{ scrollbarWidth: 'none' }}
             />
             <button
@@ -253,8 +262,8 @@ export default function HealthPage() {
   )
 }
 
-function EmptyState({ onSuggestion }: { onSuggestion: (t: string) => void }) {
-  const t = getStrings(store.getLanguage())
+function EmptyState({ lang, onSuggestion }: { lang: string; onSuggestion: (t: string) => void }) {
+  const t = getStrings(lang)
   return (
     <div className="flex flex-col items-center py-8 text-center">
       <div className="mb-4 text-5xl">🏥</div>

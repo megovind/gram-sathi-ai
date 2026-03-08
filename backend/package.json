@@ -4,6 +4,7 @@
   "description": "GramSathi AI – Python serverless backend deployment tooling",
   "scripts": {
     "deploy:dev": "serverless deploy --stage dev",
+    "deploy:force": "serverless deploy --stage dev --force",
     "deploy:prod": "serverless deploy --stage prod",
     "dev": "serverless offline start --verbose",
     "remove": "serverless remove"

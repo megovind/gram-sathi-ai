@@ -6,18 +6,22 @@ import { ArrowLeft, Search, Store, ChevronRight, Star, MapPin } from 'lucide-rea
 import { getShops, type ShopItem } from '@/lib/api'
 import { store } from '@/lib/store'
 import { getStrings } from '@/lib/strings'
+import { useAuthGuard } from '@/hooks/useAuthGuard'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
 export default function ShopsPage() {
   const router = useRouter()
-  const t = getStrings(store.getLanguage())
+  useAuthGuard()
+  const [lang, setLang] = useState('hi')
+  const t = getStrings(lang)
   const [pincode, setPincode] = useState('')
   const [shops, setShops]     = useState<ShopItem[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
 
   useEffect(() => {
+    setLang(store.getLanguage())
     const saved = store.getPincode() ?? '324008'
     setPincode(saved)
     if (saved) loadShops(saved)
@@ -104,7 +108,9 @@ export default function ShopsPage() {
 
 function ShopCard({ shop }: { shop: ShopItem }) {
   const router = useRouter()
-  const t = getStrings(store.getLanguage())
+  const [lang, setLang] = useState('hi')
+  useEffect(() => { setLang(store.getLanguage()) }, [])
+  const t = getStrings(lang)
   const itemCount = shop.inventory?.length ?? 0
   const preview   = shop.inventory?.slice(0, 3) ?? []
   const remaining = itemCount - 3
